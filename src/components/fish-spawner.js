@@ -40,7 +40,7 @@ AFRAME.registerComponent('fish-movement', {
     this.el.sceneEl.addEventListener('room-scanned', (e) => {
       this._updateZoneFromEvent(e.detail);
     });
-    
+
     // Écouter la réinitialisation de la room pour permettre un nouveau spawn si nécessaire
     this.el.sceneEl.addEventListener('room-reset', () => {
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🐟 fish-spawner: room-reset received - resetting spawn');
@@ -55,21 +55,21 @@ AFRAME.registerComponent('fish-movement', {
         this.fishes = [];
       }
     });
-    
+
     // Récupérer les infos si déjà disponibles
     if (window.FISH_ZONE.scanned) {
       this._updateZoneFromGlobal();
     }
   },
-  
-  _updateZoneFromEvent: function(data) {
+
+  _updateZoneFromEvent: function (data) {
     const centerX = data.centerX || 0;
     const centerZ = data.centerZ || -2;
     const width = data.width || 4;
     const depth = data.depth || 4;
     const height = data.height || 2.5;
     const floorY = data.floorY || 0;
-    
+
     this.roomBounds = {
       minX: centerX - width / 2,
       maxX: centerX + width / 2,
@@ -78,26 +78,26 @@ AFRAME.registerComponent('fish-movement', {
       minY: floorY,
       maxY: floorY + height
     };
-    
+
     this.orientedBox = data.orientedBox || null;
     this.obstacles = data.obstaclePlanes || [];
     this.wallPlanes = data.wallPlanes || [];
     this.floorY = floorY;
     this.ceilingY = floorY + height - 0.3;
-    
+
     if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🐟 Fish: zone detected', this.orientedBox ? '(ORIENTED)' : '(rect)');
-    
+
     this._ensureInBounds();
   },
-  
-  _updateZoneFromGlobal: function() {
+
+  _updateZoneFromGlobal: function () {
     this.roomBounds = window.FISH_ZONE.roomBounds;
     this.orientedBox = window.FISH_ZONE.orientedBox;
     this.obstacles = window.FISH_ZONE.obstacles;
     this.wallPlanes = window.FISH_ZONE.wallPlanes;
     this.floorY = window.FISH_ZONE.floorY;
     this.ceilingY = window.FISH_ZONE.ceilingY;
-    
+
     if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🐟 Fish: got global zone', this.orientedBox ? '(ORIENTED)' : '(rect)');
   },
 
@@ -111,31 +111,60 @@ AFRAME.registerComponent('fish-movement', {
       const maxZ = this.roomBounds.maxZ - margin;
       const minY = Math.max(this.floorY + 0.3, 0.2);
       const maxY = Math.min(this.ceilingY - 0.3, this.floorY + 2.0);
-      
-      this.target.set(
-        minX + Math.random() * (maxX - minX),
-        minY + Math.random() * (maxY - minY),
-        minZ + Math.random() * (maxZ - minZ)
-      );
-      
+
+      // Essayer plusieurs fois pour éviter de placer la cible dans un obstacle
+      const maxAttempts = 10;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        this.target.set(
+          minX + Math.random() * (maxX - minX),
+          minY + Math.random() * (maxY - minY),
+          minZ + Math.random() * (maxZ - minZ)
+        );
+        if (!this._isInsideObstacle(this.target)) break;
+      }
+
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🎯 New fish target:', this.target.toArray().map(v => v.toFixed(2)));
     } else {
       // Fallback: utiliser les bounds par défaut
       const b = this.bounds;
       this.target.set(
-        (Math.random() - 0.5) * b * 2, 
-        0.2 + Math.random() * (b - 0.2), 
+        (Math.random() - 0.5) * b * 2,
+        0.2 + Math.random() * (b - 0.2),
         (Math.random() - 0.5) * b * 2 - 1.0
       );
     }
   },
 
+  // Vérifie si un point est à l'intérieur d'un obstacle (table, meuble, etc.)
+  _isInsideObstacle: function (point) {
+    if (!this.obstacles || this.obstacles.length === 0) return false;
+    const fishRadius = 0.03;
+    for (let i = 0; i < this.obstacles.length; i++) {
+      const obsData = this.obstacles[i].data;
+      const bounds = obsData.bounds;
+      if (!bounds) continue;
+      // Volume solide pour tables : du sol à la surface
+      let effectiveMinY = bounds.minY;
+      let effectiveMaxY = bounds.maxY;
+      const obsType = obsData.obstacleType || '';
+      if (obsType === 'table' || obsType === 'meuble_bas' || obsType === 'etagere' || obsType === 'obstacle') {
+        effectiveMinY = this.floorY;
+        effectiveMaxY = bounds.maxY + 0.05;
+      }
+      const inX = point.x > bounds.minX - fishRadius && point.x < bounds.maxX + fishRadius;
+      const inY = point.y > effectiveMinY - fishRadius && point.y < effectiveMaxY + fishRadius;
+      const inZ = point.z > bounds.minZ - fishRadius && point.z < bounds.maxZ + fishRadius;
+      if (inX && inY && inZ) return true;
+    }
+    return false;
+  },
+
   _ensureInBounds: function () {
     if (!this.roomBounds || !isFinite(this.roomBounds.minX)) return;
-    
+
     const pos = this.el.object3D.position;
     const margin = 0.2;
-    
+
     // Garder dans les limites X, Y, Z
     if (pos.x < this.roomBounds.minX + margin) pos.x = this.roomBounds.minX + margin;
     if (pos.x > this.roomBounds.maxX - margin) pos.x = this.roomBounds.maxX - margin;
@@ -148,9 +177,9 @@ AFRAME.registerComponent('fish-movement', {
   _checkWallCollision: function (pos, nextPos) {
     // Vérifier collision avec les murs de la pièce
     if (!this.roomBounds || !isFinite(this.roomBounds.minX)) return false;
-    
+
     let collision = false;
-    
+
     // Si on a une box orientée, utiliser une collision précise
     if (this.orientedBox) {
       collision = this._checkOrientedBoxCollision(pos, nextPos);
@@ -158,15 +187,15 @@ AFRAME.registerComponent('fish-movement', {
       // Sinon, collision rectangulaire classique
       collision = this._checkAxisAlignedCollision(pos, nextPos);
     }
-    
+
     return collision;
   },
-  
-  _checkOrientedBoxCollision: function(pos, nextPos) {
+
+  _checkOrientedBoxCollision: function (pos, nextPos) {
     const box = this.orientedBox;
     let collision = false;
     const margin = 0.2;
-    
+
     // Transformer la position du poisson dans l'espace local de la box (préférer la matrice inverse)
     let localX, localZ, velLocalX, velLocalZ, cos, sin;
     if (box.inverseMatrix) {
@@ -195,7 +224,7 @@ AFRAME.registerComponent('fish-movement', {
       velLocalX = this.velocity.x * cos + this.velocity.z * sin;
       velLocalZ = -this.velocity.x * sin + this.velocity.z * cos;
     }
-    
+
     // Limites locales
     const halfW = box.halfWidth - margin;
     const halfD = box.halfDepth - margin;
@@ -204,13 +233,13 @@ AFRAME.registerComponent('fish-movement', {
     if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
       console.debug('🐟 COLLISION_DEBUG local:', { localX: localX.toFixed(2), localZ: localZ.toFixed(2), halfW: halfW.toFixed(2), halfD: halfD.toFixed(2) });
     }
-    
+
     let correctedLocalX = localX;
     let correctedLocalZ = localZ;
     let newVelLocalX = velLocalX;
     let newVelLocalZ = velLocalZ;
     let bounced = false;
-    
+
     // Collision X local (left/right)
     if (localX < -halfW) {
       correctedLocalX = -halfW + 0.05;
@@ -223,7 +252,7 @@ AFRAME.registerComponent('fish-movement', {
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce RIGHT (oriented) - localX:', localX.toFixed(2));
     }
-    
+
     // Collision Z local (front/back)
     if (localZ < -halfD) {
       correctedLocalZ = -halfD + 0.05;
@@ -236,7 +265,7 @@ AFRAME.registerComponent('fish-movement', {
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce BACK (oriented) - localZ:', localZ.toFixed(2));
     }
-    
+
     // Retransformer TOUT en coordonnées monde si collision
     if (bounced) {
       if (box.matrix) {
@@ -262,7 +291,7 @@ AFRAME.registerComponent('fish-movement', {
 
       collision = true;
     }
-    
+
     // Sol et plafond (pas de rotation Y)
     if (nextPos.y <= this.floorY + 0.2) {
       this.velocity.y = Math.abs(this.velocity.y) * 1.1;
@@ -275,14 +304,14 @@ AFRAME.registerComponent('fish-movement', {
       collision = true;
       console.debug('🔴 Rebond PLAFOND');
     }
-    
+
     return collision;
   },
-  
-  _checkAxisAlignedCollision: function(pos, nextPos) {
+
+  _checkAxisAlignedCollision: function (pos, nextPos) {
     const margin = 0.15;
     let collision = false;
-    
+
     // Collision avec les murs X
     if (nextPos.x <= this.roomBounds.minX + margin) {
       this.velocity.x = Math.abs(this.velocity.x) * 1.1; // Rebondir vers l'intérieur avec boost
@@ -295,7 +324,7 @@ AFRAME.registerComponent('fish-movement', {
       collision = true;
       console.debug('🔴 Rebond mur DROIT - pos:', nextPos.x.toFixed(2), 'limite:', (this.roomBounds.maxX - margin).toFixed(2));
     }
-    
+
     // Collision avec le sol et plafond
     if (nextPos.y <= this.floorY + 0.2) {
       this.velocity.y = Math.abs(this.velocity.y) * 1.1; // Rebondir vers le haut avec boost
@@ -308,7 +337,7 @@ AFRAME.registerComponent('fish-movement', {
       collision = true;
       console.debug('🔴 Rebond PLAFOND - pos:', nextPos.y.toFixed(2), 'limite:', (this.ceilingY - 0.2).toFixed(2));
     }
-    
+
     // Collision avec les murs Z
     if (nextPos.z <= this.roomBounds.minZ + margin) {
       this.velocity.z = Math.abs(this.velocity.z) * 1.1; // Rebondir vers l'avant avec boost
@@ -321,54 +350,92 @@ AFRAME.registerComponent('fish-movement', {
       collision = true;
       console.debug('🔴 Rebond mur AVANT - pos:', nextPos.z.toFixed(2), 'limite:', (this.roomBounds.maxZ - margin).toFixed(2));
     }
-    
+
     return collision;
   },
 
   _checkObstacleCollision: function (pos, nextPos) {
     // Vérifier collision avec les tables et obstacles
     if (!this.obstacles || this.obstacles.length === 0) return false;
-    
+
     let collision = false;
-    const fishRadius = 0.15;
-    
+    const fishRadius = 0.03;
+
     this.obstacles.forEach(obstacle => {
       const obsData = obstacle.data;
       const obsPos = obsData.position;
       const bounds = obsData.bounds;
-      
+
       if (!obsPos || !bounds) return;
-      
-      // Calculer si le poisson entre dans la boîte de l'obstacle
+
+      // Pour les tables et meubles, créer un volume SOLIDE du sol jusqu'à la surface
+      // (un poisson ne doit pas traverser la table, ni passer dessous entre les pieds)
+      let effectiveMinY = bounds.minY;
+      let effectiveMaxY = bounds.maxY;
+      const obsType = obsData.obstacleType || '';
+      if (obsType === 'table' || obsType === 'meuble_bas' || obsType === 'etagere' || obsType === 'obstacle') {
+        effectiveMinY = this.floorY; // Solide depuis le sol
+        effectiveMaxY = bounds.maxY + 0.05; // Petite marge au-dessus de la surface
+      }
+
+      // Calculer si le poisson entre dans le volume de l'obstacle
       const inX = nextPos.x > bounds.minX - fishRadius && nextPos.x < bounds.maxX + fishRadius;
-      const inY = nextPos.y > bounds.minY - fishRadius && nextPos.y < bounds.maxY + fishRadius;
+      const inY = nextPos.y > effectiveMinY - fishRadius && nextPos.y < effectiveMaxY + fishRadius;
       const inZ = nextPos.z > bounds.minZ - fishRadius && nextPos.z < bounds.maxZ + fishRadius;
-      
+
       if (inX && inY && inZ) {
-        // Collision détectée ! Rebondir intelligemment
-        const dx = nextPos.x - obsPos.x;
-        const dy = nextPos.y - obsPos.y;
-        const dz = nextPos.z - obsPos.z;
-        
-        // Rebondir selon l'axe le plus proche
-        if (Math.abs(dx) > Math.abs(dz)) {
-          this.velocity.x *= -1;
-          nextPos.x = pos.x;
+        // Collision détectée ! Calculer la pénétration sur chaque axe
+        // pour éjecter le poisson par la face la plus proche
+        const penLeft = nextPos.x - (bounds.minX - fishRadius);
+        const penRight = (bounds.maxX + fishRadius) - nextPos.x;
+        const penBottom = nextPos.y - (effectiveMinY - fishRadius);
+        const penTop = (effectiveMaxY + fishRadius) - nextPos.y;
+        const penFront = nextPos.z - (bounds.minZ - fishRadius);
+        const penBack = (bounds.maxZ + fishRadius) - nextPos.z;
+
+        // Trouver l'axe avec la plus petite pénétration (face la plus proche)
+        const pens = [
+          { axis: 'x', pen: penLeft, sign: -1 },
+          { axis: 'x', pen: penRight, sign: 1 },
+          { axis: 'y', pen: penBottom, sign: -1 },
+          { axis: 'y', pen: penTop, sign: 1 },
+          { axis: 'z', pen: penFront, sign: -1 },
+          { axis: 'z', pen: penBack, sign: 1 }
+        ];
+        pens.sort((a, b) => a.pen - b.pen);
+        const best = pens[0];
+
+        // Éjecter le poisson par la face la plus proche
+        if (best.axis === 'x') {
+          if (best.sign === -1) {
+            nextPos.x = bounds.minX - fishRadius - 0.03;
+            this.velocity.x = -Math.abs(this.velocity.x) * 1.2;
+          } else {
+            nextPos.x = bounds.maxX + fishRadius + 0.03;
+            this.velocity.x = Math.abs(this.velocity.x) * 1.2;
+          }
+        } else if (best.axis === 'y') {
+          if (best.sign === -1) {
+            nextPos.y = effectiveMinY - fishRadius - 0.03;
+            this.velocity.y = -Math.abs(this.velocity.y) * 1.2;
+          } else {
+            nextPos.y = effectiveMaxY + fishRadius + 0.03;
+            this.velocity.y = Math.abs(this.velocity.y) * 1.2;
+          }
         } else {
-          this.velocity.z *= -1;
-          nextPos.z = pos.z;
+          if (best.sign === -1) {
+            nextPos.z = bounds.minZ - fishRadius - 0.03;
+            this.velocity.z = -Math.abs(this.velocity.z) * 1.2;
+          } else {
+            nextPos.z = bounds.maxZ + fishRadius + 0.03;
+            this.velocity.z = Math.abs(this.velocity.z) * 1.2;
+          }
         }
-        
-        // Si collision verticale (dessus/dessous de table)
-        if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > Math.abs(dz)) {
-          this.velocity.y *= -1;
-          nextPos.y = pos.y;
-        }
-        
+
         collision = true;
       }
     });
-    
+
     return collision;
   },
 
@@ -411,7 +478,7 @@ AFRAME.registerComponent('fish-movement', {
 
     // Vérifier les collisions avec les murs de la pièce
     const wallHit = this._checkWallCollision(pos, nextPos);
-    
+
     // Vérifier les collisions avec les obstacles (tables, etc.)
     const obstacleHit = this._checkObstacleCollision(pos, nextPos);
 
@@ -545,27 +612,27 @@ AFRAME.registerComponent('fish-spawner', {
   _spawnFishesInRoom: function (roomData) {
     console.debug('🚀 DÉBUT SPAWN - spawned:', this.spawned, 'count:', this.data.count);
     console.debug('   roomData:', roomData);
-    
+
     if (this.spawned) {
       console.warn('⚠️ SPAWN ANNULÉ - déjà spawné !');
       return;
     }
-    
+
     this.spawned = true;
     // Track initial spawn metadata to avoid premature end-game detection
     this._initialFishCount = this.data.count || 0;
     this._spawnStartTime = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     console.debug('✅ Flag spawned = true');
-    
+
     const floorY = roomData.floorY || 0;
     const height = roomData.height || 2.5;
-    
+
     // UTILISER LES BOUNDS RÉELS du sol détecté
     const bounds = roomData.bounds || {
       minX: -2, maxX: 2,
       minZ: -3, maxZ: 1
     };
-    
+
     // Ajouter une marge de sécurité pour éviter les murs
     const margin = 0.3;
     const minX = bounds.minX + margin;
@@ -574,30 +641,34 @@ AFRAME.registerComponent('fish-spawner', {
     const maxZ = bounds.maxZ - margin;
     const minY = floorY + 0.3;
     const maxY = floorY + height - 0.4;
-    
+
     // Stocker les infos de la box orientée si disponible
     this.orientedBox = roomData.orientedBox || null;
-    
+
     // Stocker aussi dans la variable globale pour que fish-movement y accède
     window.FISH_ZONE.orientedBox = this.orientedBox;
     window.FISH_ZONE.floorY = floorY;
     window.FISH_ZONE.ceilingY = maxY;
-    
+
     // Stocker pour le mouvement
     this.roomBounds = { minX, maxX, minY, maxY, minZ, maxZ };
     window.FISH_ZONE.roomBounds = this.roomBounds;
     this.floorY = floorY;
     this.ceilingY = maxY;
 
+    // Stocker les obstacles (tables, meubles) pour la collision et le spawn
+    this.obstacles = roomData.obstaclePlanes || [];
+    window.FISH_ZONE.obstacles = this.obstacles;
+
     const scene = this.el.sceneEl;
     const parent = document.querySelector('#world-anchor') || scene;
 
     console.debug(`🐟 Spawn de ${this.data.count} poissons dans la pièce détectée:`);
     console.debug(`   Bounds RÉELS du sol:`);
-    console.debug(`   Limites X: ${minX.toFixed(2)} à ${maxX.toFixed(2)} (largeur: ${(maxX-minX).toFixed(2)}m)`);
-    console.debug(`   Limites Y: ${minY.toFixed(2)} à ${maxY.toFixed(2)} (hauteur: ${(maxY-minY).toFixed(2)}m)`);
-    console.debug(`   Limites Z: ${minZ.toFixed(2)} à ${maxZ.toFixed(2)} (profondeur: ${(maxZ-minZ).toFixed(2)}m)`);
-    
+    console.debug(`   Limites X: ${minX.toFixed(2)} à ${maxX.toFixed(2)} (largeur: ${(maxX - minX).toFixed(2)}m)`);
+    console.debug(`   Limites Y: ${minY.toFixed(2)} à ${maxY.toFixed(2)} (hauteur: ${(maxY - minY).toFixed(2)}m)`);
+    console.debug(`   Limites Z: ${minZ.toFixed(2)} à ${maxZ.toFixed(2)} (profondeur: ${(maxZ - minZ).toFixed(2)}m)`);
+
     if (this.orientedBox) {
       console.log(`   ✅ Zone ORIENTÉE - rotation: ${(this.orientedBox.rotationY * 180 / Math.PI).toFixed(1)}°`);
     }
@@ -627,7 +698,7 @@ AFRAME.registerComponent('fish-spawner', {
 
       // Position aléatoire DANS la zone orientée ou les bounds
       let x, y, z;
-      
+
       if (this.orientedBox) {
         // Spawner dans l'espace local de la box orientée
         const box = this.orientedBox;
@@ -636,7 +707,7 @@ AFRAME.registerComponent('fish-spawner', {
         const shrinkFactor = 1.0;
         const localX = (Math.random() - 0.5) * (box.width - spawnMargin * 2) * shrinkFactor;
         const localZ = (Math.random() - 0.5) * (box.depth - spawnMargin * 2) * shrinkFactor;
-        
+
         // Transformer en coordonnées monde en utilisant la matrice fournie par room-detection si disponible
         const localVec = new THREE.Vector3(localX, 0, localZ);
         if (box.matrix) {
@@ -682,10 +753,25 @@ AFRAME.registerComponent('fish-spawner', {
       }
       // Ensure the spawn position is strictly inside the room bounds (fix fish outside zone)
       // Pass the chosen model so we can apply per-model extra margins (for models with large pivots)
-      const clamped = this._clampSpawnPosition({ x, y, z }, chosen);
+      let clamped = this._clampSpawnPosition({ x, y, z }, chosen);
       if (clamped.x !== x || clamped.y !== y || clamped.z !== z) {
         if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
           console.debug(`⚙️ Fish #${i + 1} position corrected -> (${clamped.x.toFixed(2)}, ${clamped.y.toFixed(2)}, ${clamped.z.toFixed(2)})`);
+        }
+      }
+
+      // Vérifier que le poisson ne spawn pas dans un obstacle (table, meuble)
+      if (this._isSpawnInsideObstacle(clamped)) {
+        // Réessayer jusqu'à 15 fois pour trouver une position hors obstacle
+        for (let attempt = 0; attempt < 15; attempt++) {
+          const retryX = minX + Math.random() * (maxX - minX);
+          const retryY = minY + Math.random() * (maxY - minY);
+          const retryZ = minZ + Math.random() * (maxZ - minZ);
+          const retryClamped = this._clampSpawnPosition({ x: retryX, y: retryY, z: retryZ }, chosen);
+          if (!this._isSpawnInsideObstacle(retryClamped)) {
+            clamped = retryClamped;
+            break;
+          }
         }
       }
       fish.setAttribute('position', `${clamped.x} ${clamped.y} ${clamped.z}`);
@@ -698,7 +784,7 @@ AFRAME.registerComponent('fish-spawner', {
       try {
         const typeName = chosen.replace('#', '');
         fish.setAttribute('data-fish-type', typeName);
-      } catch (e) {}
+      } catch (e) { }
 
       // Add movement component (slightly increased so fishes can escape walls)
       // Make fishes ultra-slow overall but a bit faster than before: range ~0.00001 - 0.00003
@@ -766,7 +852,7 @@ AFRAME.registerComponent('fish-spawner', {
     const depth = roomData.depth || 4;
     const height = roomData.height || 2.5;
     const floorY = roomData.floorY || 0;
-    
+
     // Calculer les vraies limites
     const minX = centerX - width / 2;
     const maxX = centerX + width / 2;
@@ -774,7 +860,7 @@ AFRAME.registerComponent('fish-spawner', {
     const maxZ = centerZ + depth / 2;
     const minY = floorY + 0.2;
     const maxY = floorY + height - 0.3;
-    
+
     // Stocker pour le mouvement
     this.roomBounds = { minX, maxX, minY, maxY, minZ, maxZ };
     this.floorY = floorY;
@@ -792,7 +878,7 @@ AFRAME.registerComponent('fish-spawner', {
       const x = minX + margin + Math.random() * (maxX - minX - margin * 2);
       const y = minY + 0.2 + Math.random() * (maxY - minY - 0.4);
       const z = minZ + margin + Math.random() * (maxZ - minZ - margin * 2);
-      
+
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.log(`🔄 Fish #${i + 1} repositioned to (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
       fish.setAttribute('position', `${x} ${y} ${z}`);
     });
@@ -882,5 +968,29 @@ AFRAME.registerComponent('fish-spawner', {
   _randomColor: function () {
     const palette = ['#f39c12', '#e74c3c', '#1abc9c', '#3498db', '#9b59b6', '#f1c40f'];
     return palette[Math.floor(Math.random() * palette.length)];
+  },
+
+  // Vérifie si une position de spawn est à l'intérieur d'un obstacle (table, meuble)
+  _isSpawnInsideObstacle: function (pos) {
+    if (!this.obstacles || this.obstacles.length === 0) return false;
+    const fishRadius = 0.05; // Marge réduite pour le spawn
+    for (let i = 0; i < this.obstacles.length; i++) {
+      const obsData = this.obstacles[i].data;
+      const bounds = obsData.bounds;
+      if (!bounds) continue;
+      // Volume solide pour tables : du sol à la surface
+      let effectiveMinY = bounds.minY;
+      let effectiveMaxY = bounds.maxY;
+      const obsType = obsData.obstacleType || '';
+      if (obsType === 'table' || obsType === 'meuble_bas' || obsType === 'etagere' || obsType === 'obstacle') {
+        effectiveMinY = this.floorY;
+        effectiveMaxY = bounds.maxY + 0.1;
+      }
+      const inX = pos.x > bounds.minX - fishRadius && pos.x < bounds.maxX + fishRadius;
+      const inY = pos.y > effectiveMinY - fishRadius && pos.y < effectiveMaxY + fishRadius;
+      const inZ = pos.z > bounds.minZ - fishRadius && pos.z < bounds.maxZ + fishRadius;
+      if (inX && inY && inZ) return true;
+    }
+    return false;
   }
 });
