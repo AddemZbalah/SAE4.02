@@ -186,9 +186,11 @@
 
     <!-- VR Hands with laser controls and raycasters to interact with 3D UI -->
     <a-entity id="leftHand" hand-controls="hand: left; handModelStyle: lowPoly; color: #15ACCF"
-      laser-controls="hand: left" raycaster="objects: .clickable"></a-entity>
+      laser-controls="hand: left; defaultModelColor: #00ffff"
+      raycaster="objects: .clickable, .fish-target; showLine: true; lineColor: cyan; lineOpacity: 0.8"></a-entity>
     <a-entity id="rightHand" hand-controls="hand: right; handModelStyle: lowPoly; color: #15ACCF"
-      laser-controls="hand: right" raycaster="objects: .clickable"></a-entity>
+      laser-controls="hand: right; defaultModelColor: #00ffff"
+      raycaster="objects: .clickable, .fish-target; showLine: true; lineColor: cyan; lineOpacity: 0.8"></a-entity>
 
     <!-- EFFET D'EAU QUI MONTE avec shader Three.js (positionnée dans le monde, pas au niveau de la caméra) -->
     <a-entity id="water-surface" position="0 0 -2" water-adapter>

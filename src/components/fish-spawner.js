@@ -28,6 +28,9 @@ AFRAME.registerComponent('fish-movement', {
     this.bobAmplitude = 0.003 + Math.random() * 0.006; // meters (small)
     this.bobOffset = Math.random() * Math.PI * 2;
 
+    // Cooldown après collision pour laisser le poisson s'éloigner avant de lerp vers une cible
+    this._collisionCooldown = 0;
+
     // Utiliser les données globales de la zone
     this.roomBounds = null;
     this.orientedBox = null;
@@ -35,6 +38,16 @@ AFRAME.registerComponent('fish-movement', {
     this.wallPlanes = [];
     this.floorY = 0;
     this.ceilingY = 2.5;
+
+    // Configuration du système de réflexion avec cône
+    // coneAngle: angle du cône en degrés autour de la NORMALE (80° = très aléatoire)
+    // dampingFactor: réduction de vitesse après collision (0.5 = perd 50%, 1.0 = garde tout)
+    // minReflectionSpeed: vitesse minimale après réflexion pour éviter l'arrêt total
+    this._collisionConfig = {
+      coneAngle: 160,
+      dampingFactor: 0.85,
+      minReflectionSpeed: 0.000005
+    };
 
     // Écouter l'événement de scan de pièce
     this.el.sceneEl.addEventListener('room-scanned', (e) => {
@@ -99,6 +112,88 @@ AFRAME.registerComponent('fish-movement', {
     this.ceilingY = window.FISH_ZONE.ceilingY;
 
     if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🐟 Fish: got global zone', this.orientedBox ? '(ORIENTED)' : '(rect)');
+  },
+
+  // ==========================================
+  // SYSTÈME DE RÉFLEXION PHYSIQUE AVEC CÔNE
+  // ==========================================
+
+  // Calcul du vecteur réfléchi parfait : R = D - 2(D·N)N
+  // incident = direction actuelle du poisson (THREE.Vector3)
+  // normal = vecteur normal de la surface (THREE.Vector3, normalisé)
+  // Retourne un nouveau THREE.Vector3 réfléchi
+  _calculateReflection: function (incident, normal) {
+    // Produit scalaire entre la direction incidente et la normale
+    var dotProduct = incident.dot(normal);
+    // Formule de réflexion : R = D - 2(D·N)N
+    var reflected = incident.clone().sub(
+      normal.clone().multiplyScalar(2 * dotProduct)
+    );
+    return reflected;
+  },
+
+  // Crée une base orthonormée (U, V) perpendiculaire à un vecteur donné
+  // Nécessaire pour construire le cône autour du vecteur réfléchi
+  // Retourne { u: THREE.Vector3, v: THREE.Vector3 }
+  _createOrthonormalBasis: function (vector) {
+    var normalized = vector.clone().normalize();
+    // Choisir un vecteur "helper" non parallèle au vecteur d'entrée
+    // Si le vecteur est presque vertical (Y), on utilise X à la place
+    var helper = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(normalized.dot(helper)) > 0.9) {
+      helper = new THREE.Vector3(1, 0, 0);
+    }
+    // Premier vecteur perpendiculaire : produit vectoriel (vector × helper)
+    var u = new THREE.Vector3().crossVectors(normalized, helper).normalize();
+    // Second vecteur perpendiculaire : produit vectoriel (vector × u)
+    var v = new THREE.Vector3().crossVectors(normalized, u).normalize();
+    return { u: u, v: v };
+  },
+
+  // Génère un vecteur de direction aléatoire dans un cône autour de la NORMALE
+  // Cela évite l'effet ping-pong : le poisson part dans une direction aléatoire
+  // dans l'hémisphère opposé à l'obstacle, pas juste en miroir
+  // normal = vecteur normal de la surface (direction "loin de l'obstacle")
+  // speed = vitesse actuelle du poisson
+  // coneAngleDeg = angle du cône en degrés (80° = très aléatoire)
+  // dampingFactor = facteur d'amortissement (0.0 à 1.0)
+  // Retourne un nouveau THREE.Vector3 avec la nouvelle direction et vitesse
+  _generateConeReflection: function (normal, speed, coneAngleDeg, dampingFactor) {
+    // Direction de base = la normale de la surface (pointe loin de l'obstacle)
+    var direction = normal.clone().normalize();
+
+    // Créer la base orthonormée (U, V) perpendiculaire à la normale
+    var basis = this._createOrthonormalBasis(direction);
+    var u = basis.u;
+    var v = basis.v;
+
+    // ---- Génération aléatoire dans le cône autour de la normale ----
+    // phi = angle de rotation autour de la normale (0 à 2π) → direction aléatoire
+    var phi = Math.random() * Math.PI * 2;
+
+    // theta = angle par rapport à la normale (0 à coneAngle)
+    // Distribution uniforme dans le cône solide
+    var coneAngleRad = coneAngleDeg * (Math.PI / 180);
+    var theta = Math.acos(1 - Math.random() * (1 - Math.cos(coneAngleRad)));
+
+    // Composantes trigonométriques
+    var sinTheta = Math.sin(theta);
+    var cosTheta = Math.cos(theta);
+
+    // Nouvelle direction = cos(θ)·N + sin(θ)·(cos(φ)·U + sin(φ)·V)
+    // Cela donne une direction aléatoire dans le cône autour de la normale
+    var newDirection = new THREE.Vector3()
+      .addScaledVector(direction, cosTheta)
+      .addScaledVector(u, sinTheta * Math.cos(phi))
+      .addScaledVector(v, sinTheta * Math.sin(phi));
+    newDirection.normalize();
+
+    // Appliquer le damping (amortissement) : réduire la vitesse après collision
+    var minSpeed = this._collisionConfig.minReflectionSpeed;
+    var newSpeed = Math.max(speed * dampingFactor, minSpeed);
+
+    // Retourner le vecteur direction × vitesse
+    return newDirection.multiplyScalar(newSpeed);
   },
 
   _pickNewTarget: function () {
@@ -240,30 +335,52 @@ AFRAME.registerComponent('fish-movement', {
     let newVelLocalZ = velLocalZ;
     let bounced = false;
 
+    // Normale locale combinée (pour gérer les collisions en coin)
+    const localNormal = new THREE.Vector3(0, 0, 0);
+
     // Collision X local (left/right)
     if (localX < -halfW) {
-      correctedLocalX = -halfW + 0.05;
-      newVelLocalX = Math.abs(velLocalX) * 1.1; // bounce right
+      correctedLocalX = -halfW + 0.15;
+      localNormal.x = 1; // Normale pointe vers l'intérieur (droite)
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce LEFT (oriented) - localX:', localX.toFixed(2));
     } else if (localX > halfW) {
-      correctedLocalX = halfW - 0.05;
-      newVelLocalX = -Math.abs(velLocalX) * 1.1; // bounce left
+      correctedLocalX = halfW - 0.15;
+      localNormal.x = -1; // Normale pointe vers l'intérieur (gauche)
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce RIGHT (oriented) - localX:', localX.toFixed(2));
     }
 
     // Collision Z local (front/back)
     if (localZ < -halfD) {
-      correctedLocalZ = -halfD + 0.05;
-      newVelLocalZ = Math.abs(velLocalZ) * 1.1; // bounce back
+      correctedLocalZ = -halfD + 0.15;
+      localNormal.z = 1; // Normale pointe vers l'intérieur
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce FRONT (oriented) - localZ:', localZ.toFixed(2));
     } else if (localZ > halfD) {
-      correctedLocalZ = halfD - 0.05;
-      newVelLocalZ = -Math.abs(velLocalZ) * 1.1; // bounce forward
+      correctedLocalZ = halfD - 0.15;
+      localNormal.z = -1; // Normale pointe vers l'intérieur
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce BACK (oriented) - localZ:', localZ.toFixed(2));
+    }
+
+    // Appliquer la direction aléatoire dans le cône autour de la normale (espace local)
+    if (bounced) {
+      localNormal.normalize();
+      // Vitesse actuelle du poisson en espace local
+      const localVelVec = new THREE.Vector3(velLocalX, this.velocity.y, velLocalZ);
+      var localSpeed = localVelVec.length();
+      // Générer une direction aléatoire dans le cône autour de la normale locale
+      const newVel = this._generateConeReflection(
+        localNormal,
+        localSpeed,
+        this._collisionConfig.coneAngle,
+        this._collisionConfig.dampingFactor
+      );
+      // Extraire les composantes locales
+      newVelLocalX = newVel.x;
+      newVelLocalZ = newVel.z;
+      this.velocity.y = newVel.y;
     }
 
     // Retransformer TOUT en coordonnées monde si collision
@@ -292,17 +409,23 @@ AFRAME.registerComponent('fish-movement', {
       collision = true;
     }
 
-    // Sol et plafond (pas de rotation Y)
+    // Sol et plafond (pas de rotation Y) — direction aléatoire dans le cône
     if (nextPos.y <= this.floorY + 0.2) {
-      this.velocity.y = Math.abs(this.velocity.y) * 1.1;
+      const floorNormal = new THREE.Vector3(0, 1, 0);
+      var floorSpeed = this.velocity.length();
+      const newVel = this._generateConeReflection(floorNormal, floorSpeed, this._collisionConfig.coneAngle, this._collisionConfig.dampingFactor);
+      this.velocity.copy(newVel);
       nextPos.y = this.floorY + 0.25;
       collision = true;
-      console.debug('🔴 Rebond SOL');
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond SOL (cône)');
     } else if (nextPos.y >= this.ceilingY - 0.2) {
-      this.velocity.y = -Math.abs(this.velocity.y) * 1.1;
+      const ceilNormal = new THREE.Vector3(0, -1, 0);
+      var ceilSpeed = this.velocity.length();
+      const newVel = this._generateConeReflection(ceilNormal, ceilSpeed, this._collisionConfig.coneAngle, this._collisionConfig.dampingFactor);
+      this.velocity.copy(newVel);
       nextPos.y = this.ceilingY - 0.25;
       collision = true;
-      console.debug('🔴 Rebond PLAFOND');
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond PLAFOND (cône)');
     }
 
     return collision;
@@ -312,43 +435,67 @@ AFRAME.registerComponent('fish-movement', {
     const margin = 0.15;
     let collision = false;
 
+    // Normale combinée pour les collisions multiples (coins)
+    const wallNormal = new THREE.Vector3(0, 0, 0);
+    let wallHit = false;
+
     // Collision avec les murs X
     if (nextPos.x <= this.roomBounds.minX + margin) {
-      this.velocity.x = Math.abs(this.velocity.x) * 1.1; // Rebondir vers l'intérieur avec boost
-      nextPos.x = this.roomBounds.minX + margin + 0.02; // Forcer à l'intérieur
-      collision = true;
-      console.debug('🔴 Rebond mur GAUCHE - pos:', nextPos.x.toFixed(2), 'limite:', (this.roomBounds.minX + margin).toFixed(2));
+      wallNormal.x = 1; // Normale pointe vers l'intérieur (droite)
+      nextPos.x = this.roomBounds.minX + margin + 0.02;
+      wallHit = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond mur GAUCHE (cône)');
     } else if (nextPos.x >= this.roomBounds.maxX - margin) {
-      this.velocity.x = -Math.abs(this.velocity.x) * 1.1; // Rebondir vers l'intérieur avec boost
-      nextPos.x = this.roomBounds.maxX - margin - 0.02; // Forcer à l'intérieur
-      collision = true;
-      console.debug('🔴 Rebond mur DROIT - pos:', nextPos.x.toFixed(2), 'limite:', (this.roomBounds.maxX - margin).toFixed(2));
-    }
-
-    // Collision avec le sol et plafond
-    if (nextPos.y <= this.floorY + 0.2) {
-      this.velocity.y = Math.abs(this.velocity.y) * 1.1; // Rebondir vers le haut avec boost
-      nextPos.y = this.floorY + 0.2 + 0.02;
-      collision = true;
-      console.debug('🔴 Rebond SOL - pos:', nextPos.y.toFixed(2), 'limite:', (this.floorY + 0.2).toFixed(2));
-    } else if (nextPos.y >= this.ceilingY - 0.2) {
-      this.velocity.y = -Math.abs(this.velocity.y) * 1.1; // Rebondir vers le bas avec boost
-      nextPos.y = this.ceilingY - 0.2 - 0.02;
-      collision = true;
-      console.debug('🔴 Rebond PLAFOND - pos:', nextPos.y.toFixed(2), 'limite:', (this.ceilingY - 0.2).toFixed(2));
+      wallNormal.x = -1; // Normale pointe vers l'intérieur (gauche)
+      nextPos.x = this.roomBounds.maxX - margin - 0.02;
+      wallHit = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond mur DROIT (cône)');
     }
 
     // Collision avec les murs Z
     if (nextPos.z <= this.roomBounds.minZ + margin) {
-      this.velocity.z = Math.abs(this.velocity.z) * 1.1; // Rebondir vers l'avant avec boost
+      wallNormal.z = 1; // Normale pointe vers l'intérieur
       nextPos.z = this.roomBounds.minZ + margin + 0.02;
-      collision = true;
-      console.debug('🔴 Rebond mur ARRIÈRE - pos:', nextPos.z.toFixed(2), 'limite:', (this.roomBounds.minZ + margin).toFixed(2));
+      wallHit = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond mur ARRIÈRE (cône)');
     } else if (nextPos.z >= this.roomBounds.maxZ - margin) {
-      this.velocity.z = -Math.abs(this.velocity.z) * 1.1; // Rebondir vers l'arrière avec boost
+      wallNormal.z = -1; // Normale pointe vers l'intérieur
       nextPos.z = this.roomBounds.maxZ - margin - 0.02;
+      wallHit = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond mur AVANT (cône)');
+    }
+
+    // Appliquer la direction aléatoire dans le cône pour les murs X/Z
+    if (wallHit) {
+      wallNormal.normalize();
+      var wallSpeed = this.velocity.length();
+      const newVel = this._generateConeReflection(
+        wallNormal,
+        wallSpeed,
+        this._collisionConfig.coneAngle,
+        this._collisionConfig.dampingFactor
+      );
+      this.velocity.copy(newVel);
       collision = true;
-      console.debug('🔴 Rebond mur AVANT - pos:', nextPos.z.toFixed(2), 'limite:', (this.roomBounds.maxZ - margin).toFixed(2));
+    }
+
+    // Collision avec le sol et plafond (traités séparément)
+    if (nextPos.y <= this.floorY + 0.2) {
+      const floorNormal = new THREE.Vector3(0, 1, 0);
+      var floorSpeed2 = this.velocity.length();
+      const newVel = this._generateConeReflection(floorNormal, floorSpeed2, this._collisionConfig.coneAngle, this._collisionConfig.dampingFactor);
+      this.velocity.copy(newVel);
+      nextPos.y = this.floorY + 0.2 + 0.02;
+      collision = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond SOL (cône)');
+    } else if (nextPos.y >= this.ceilingY - 0.2) {
+      const ceilNormal = new THREE.Vector3(0, -1, 0);
+      var ceilSpeed2 = this.velocity.length();
+      const newVel = this._generateConeReflection(ceilNormal, ceilSpeed2, this._collisionConfig.coneAngle, this._collisionConfig.dampingFactor);
+      this.velocity.copy(newVel);
+      nextPos.y = this.ceilingY - 0.2 - 0.02;
+      collision = true;
+      if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Rebond PLAFOND (cône)');
     }
 
     return collision;
@@ -405,32 +552,47 @@ AFRAME.registerComponent('fish-movement', {
         pens.sort((a, b) => a.pen - b.pen);
         const best = pens[0];
 
-        // Éjecter le poisson par la face la plus proche
+        // Déterminer le vecteur normal de la face de collision
+        // La normale pointe VERS L'EXTÉRIEUR de l'obstacle (direction d'éjection)
+        const normal = new THREE.Vector3(0, 0, 0);
+
+        // Éjecter le poisson par la face la plus proche (augmenté à 0.15 pour éviter blocage)
         if (best.axis === 'x') {
           if (best.sign === -1) {
-            nextPos.x = bounds.minX - fishRadius - 0.03;
-            this.velocity.x = -Math.abs(this.velocity.x) * 1.2;
+            nextPos.x = bounds.minX - fishRadius - 0.15;
+            normal.x = -1; // Normale vers la gauche (extérieur)
           } else {
-            nextPos.x = bounds.maxX + fishRadius + 0.03;
-            this.velocity.x = Math.abs(this.velocity.x) * 1.2;
+            nextPos.x = bounds.maxX + fishRadius + 0.15;
+            normal.x = 1; // Normale vers la droite (extérieur)
           }
         } else if (best.axis === 'y') {
           if (best.sign === -1) {
-            nextPos.y = effectiveMinY - fishRadius - 0.03;
-            this.velocity.y = -Math.abs(this.velocity.y) * 1.2;
+            nextPos.y = effectiveMinY - fishRadius - 0.15;
+            normal.y = -1; // Normale vers le bas (extérieur)
           } else {
-            nextPos.y = effectiveMaxY + fishRadius + 0.03;
-            this.velocity.y = Math.abs(this.velocity.y) * 1.2;
+            nextPos.y = effectiveMaxY + fishRadius + 0.15;
+            normal.y = 1; // Normale vers le haut (extérieur)
           }
         } else {
           if (best.sign === -1) {
-            nextPos.z = bounds.minZ - fishRadius - 0.03;
-            this.velocity.z = -Math.abs(this.velocity.z) * 1.2;
+            nextPos.z = bounds.minZ - fishRadius - 0.15;
+            normal.z = -1; // Normale vers l'arrière (extérieur)
           } else {
-            nextPos.z = bounds.maxZ + fishRadius + 0.03;
-            this.velocity.z = Math.abs(this.velocity.z) * 1.2;
+            nextPos.z = bounds.maxZ + fishRadius + 0.15;
+            normal.z = 1; // Normale vers l'avant (extérieur)
           }
         }
+
+        // Appliquer la direction aléatoire dans le cône autour de la normale
+        // (le poisson part dans une direction aléatoire loin de l'obstacle)
+        var currentSpeed = this.velocity.length();
+        const newVel = this._generateConeReflection(
+          normal,
+          currentSpeed,
+          this._collisionConfig.coneAngle,
+          this._collisionConfig.dampingFactor
+        );
+        this.velocity.copy(newVel);
 
         collision = true;
       }
@@ -449,12 +611,23 @@ AFRAME.registerComponent('fish-movement', {
     // Si proche de la cible, choisir une nouvelle cible
     if (pos.distanceTo(this.target) < 0.4) this._pickNewTarget();
 
+    // Réduire le cooldown de collision
+    if (this._collisionCooldown > 0) {
+      this._collisionCooldown -= dt;
+    }
+
     // Direction désirée vers la cible
     const desired = this.target.clone().sub(pos).normalize();
 
-    // Ajuster progressivement la vélocité vers la direction désirée (lent mais réactif)
+    // Ajuster progressivement la vélocité vers la direction désirée
+    // SAUF pendant le cooldown post-collision : le poisson garde sa direction de rebond
     const desiredVel = desired.multiplyScalar(this.speed);
-    this.velocity.lerp(desiredVel, Math.min(1, dt * 0.8));
+    if (this._collisionCooldown <= 0) {
+      this.velocity.lerp(desiredVel, Math.min(1, dt * 0.8));
+    } else {
+      // Pendant le cooldown, lerp très faible pour ne pas annuler le rebond
+      this.velocity.lerp(desiredVel, Math.min(1, dt * 0.05));
+    }
 
     // Ajouter un mouvement de nage latéral naturel (subtil et lent)
     this.swayPhase += dt * (0.35 + Math.random() * 0.2);
@@ -482,20 +655,23 @@ AFRAME.registerComponent('fish-movement', {
     // Vérifier les collisions avec les obstacles (tables, etc.)
     const obstacleHit = this._checkObstacleCollision(pos, nextPos);
 
-    // Si collision, choisir une nouvelle cible aléatoire pour éviter de rester coincé
+    // Si collision, placer la cible DANS LA DIRECTION DU REBOND pour éviter le ping-pong
     if (wallHit || obstacleHit) {
-      this._pickNewTarget();
+      // Activer le cooldown : le poisson garde sa direction de rebond pendant 1.5s
+      this._collisionCooldown = 1.5;
 
-      // Ajouter une perturbation un peu plus significative pour éviter que le poisson reste collé
-      this.velocity.x += (Math.random() - 0.5) * 0.02;
-      this.velocity.y += (Math.random() - 0.5) * 0.01;
-      this.velocity.z += (Math.random() - 0.5) * 0.02;
+      // Placer la cible dans la direction de la vélocité post-rebond (loin du mur)
+      const reboundDir = this.velocity.clone().normalize();
+      const distToTarget = 1.5 + Math.random() * 2.0; // 1.5 à 3.5m devant
+      this.target.copy(pos).addScaledVector(reboundDir, distToTarget);
 
-      // Appliquer une poussée dirigée vers la nouvelle cible pour pousser le poisson à s'éloigner du mur
-      try {
-        const push = this.target.clone().sub(pos).normalize().multiplyScalar(this.speed * 0.8);
-        this.velocity.add(push);
-      } catch (e) { /* ignore if target/pos invalid */ }
+      // Clamper la cible dans les bounds pour qu'elle ne sorte pas de la pièce
+      if (this.roomBounds && isFinite(this.roomBounds.minX)) {
+        const m = 0.4;
+        this.target.x = Math.max(this.roomBounds.minX + m, Math.min(this.roomBounds.maxX - m, this.target.x));
+        this.target.z = Math.max(this.roomBounds.minZ + m, Math.min(this.roomBounds.maxZ - m, this.target.z));
+        this.target.y = Math.max(this.floorY + 0.3, Math.min(this.ceilingY - 0.3, this.target.y));
+      }
     }
 
     // Apply vertical bob before finalizing position
@@ -505,31 +681,60 @@ AFRAME.registerComponent('fish-movement', {
     pos.copy(nextPos);
 
     // SÉCURITÉ FINALE: Forcer le poisson à rester strictement dans les bounds
+    // Utilise le cône de réflexion au lieu d'un simple flip pour garder une direction naturelle
     if (this.roomBounds && isFinite(this.roomBounds.minX)) {
       const safeMar = 0.1;
+      let safetyBounce = false;
+      const safeNormal = new THREE.Vector3(0, 0, 0);
+
       if (pos.x < this.roomBounds.minX + safeMar) {
         pos.x = this.roomBounds.minX + safeMar;
-        this.velocity.x = Math.abs(this.velocity.x);
+        safeNormal.x += 1;
+        safetyBounce = true;
       }
       if (pos.x > this.roomBounds.maxX - safeMar) {
         pos.x = this.roomBounds.maxX - safeMar;
-        this.velocity.x = -Math.abs(this.velocity.x);
+        safeNormal.x += -1;
+        safetyBounce = true;
       }
       if (pos.y < this.floorY + 0.15) {
         pos.y = this.floorY + 0.15;
-        this.velocity.y = Math.abs(this.velocity.y);
+        safeNormal.y += 1;
+        safetyBounce = true;
       }
       if (pos.y > this.ceilingY - 0.15) {
         pos.y = this.ceilingY - 0.15;
-        this.velocity.y = -Math.abs(this.velocity.y);
+        safeNormal.y += -1;
+        safetyBounce = true;
       }
       if (pos.z < this.roomBounds.minZ + safeMar) {
         pos.z = this.roomBounds.minZ + safeMar;
-        this.velocity.z = Math.abs(this.velocity.z);
+        safeNormal.z += 1;
+        safetyBounce = true;
       }
       if (pos.z > this.roomBounds.maxZ - safeMar) {
         pos.z = this.roomBounds.maxZ - safeMar;
-        this.velocity.z = -Math.abs(this.velocity.z);
+        safeNormal.z += -1;
+        safetyBounce = true;
+      }
+
+      // Appliquer le cône de réflexion pour la sécurité aussi
+      if (safetyBounce) {
+        safeNormal.normalize();
+        var safeSpeed = this.velocity.length();
+        var safeVel = this._generateConeReflection(safeNormal, safeSpeed, this._collisionConfig.coneAngle, this._collisionConfig.dampingFactor);
+        this.velocity.copy(safeVel);
+        this._collisionCooldown = 1.5;
+
+        // Replacer la cible dans la direction du rebond
+        var safeDir = this.velocity.clone().normalize();
+        this.target.copy(pos).addScaledVector(safeDir, 1.0);
+        if (this.roomBounds) {
+          var sm = 0.4;
+          this.target.x = Math.max(this.roomBounds.minX + sm, Math.min(this.roomBounds.maxX - sm, this.target.x));
+          this.target.z = Math.max(this.roomBounds.minZ + sm, Math.min(this.roomBounds.maxZ - sm, this.target.z));
+          this.target.y = Math.max(this.floorY + 0.3, Math.min(this.ceilingY - 0.3, this.target.y));
+        }
       }
     }
 
