@@ -6,13 +6,17 @@ window.FISH_ZONE = {
   ceilingY: 2.5,
   scanned: false,
   obstacles: [],
-  wallPlanes: []
+  wallPlanes: [],
+  openings: []  // Portes et fenêtres pour spawn XR
 };
 
 AFRAME.registerComponent('fish-movement', {
   schema: {
     speed: { type: 'number', default: 0.05 },
-    bounds: { type: 'number', default: 2 }
+    bounds: { type: 'number', default: 2 },
+    entryMode: { type: 'boolean', default: false },
+    entryDuration: { type: 'number', default: 4000 },
+    initialVelocity: { type: 'vec3', default: { x: 0, y: 0, z: 0 } }
   },
 
   init: function () {
@@ -30,6 +34,20 @@ AFRAME.registerComponent('fish-movement', {
 
     // Cooldown après collision pour laisser le poisson s'éloigner avant de lerp vers une cible
     this._collisionCooldown = 0;
+
+    // 🚪 Mode d'entrée: pour les poissons qui traversent les ouvertures
+    this._entryMode = this.data.entryMode;
+    this._entryStartTime = this._entryMode ? Date.now() : null;
+    this._entryDuration = this.data.entryDuration;
+
+    // Si en mode entry, utiliser la vélocité initiale fournie
+    if (this._entryMode && this.data.initialVelocity) {
+      this.velocity.set(
+        this.data.initialVelocity.x,
+        this.data.initialVelocity.y,
+        this.data.initialVelocity.z
+      );
+    }
 
     // Utiliser les données globales de la zone
     this.roomBounds = null;
@@ -608,6 +626,47 @@ AFRAME.registerComponent('fish-movement', {
     const dt = delta / 1000;
     const pos = this.el.object3D.position;
 
+    // 🚪 MODE ENTRY: Traversée des ouvertures sans collision
+    if (this._entryMode) {
+      const elapsed = Date.now() - this._entryStartTime;
+
+      if (elapsed > this._entryDuration) {
+        // Fin du mode entry, passer au comportement normal
+        this._entryMode = false;
+        this._pickNewTarget(); // Choisir une nouvelle cible dans la pièce
+
+        if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
+          console.debug(`🐟 Fish exited entry mode at (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)})`);
+        }
+      } else {
+        // En mode entry: mouvement fluide et constant
+        // Limiter le delta pour éviter les sauts saccadés
+        const safeDt = Math.min(dt, 0.05); // Max 50ms par frame
+
+        // Appliquer la vélocité de manière fluide
+        pos.addScaledVector(this.velocity, safeDt);
+
+        // Ajouter un léger mouvement de nage pour plus de naturel
+        this.swayPhase += safeDt * 1.5;
+        const swimBob = Math.sin(this.swayPhase * 2.0) * 0.015; // Légère ondulation
+        pos.y += swimBob * safeDt * 60; // Compensé pour le framerate
+
+        // Orienter le poisson dans la direction du mouvement
+        if (this.velocity.length() > 0.001) {
+          const dir = this.velocity.clone().normalize();
+          const angle = Math.atan2(dir.x, dir.z);
+          this.el.object3D.rotation.y = angle;
+
+          // Légère inclinaison verticale pour plus de réalisme
+          const verticalAngle = Math.atan2(this.velocity.y,
+            Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z));
+          this.el.object3D.rotation.x = -verticalAngle * 0.3; // Atténué
+        }
+
+        return; // Skip le reste du tick
+      }
+    }
+
     // Si proche de la cible, choisir une nouvelle cible
     if (pos.distanceTo(this.target) < 0.4) this._pickNewTarget();
 
@@ -814,6 +873,63 @@ AFRAME.registerComponent('fish-spawner', {
     console.debug('🐟 Fish-spawner: attente du scan de la pièce...');
   },
 
+  _spawnFishFromOpening: function (opening) {
+    // Positionner le poisson LOIN à l'extérieur de l'ouverture pour effet cinématique
+    const spawnDistance = 3.0 + Math.random() * 2.5; // 3.0-5.5m à l'extérieur
+
+    // CORRECTION: Forcer la position de spawn en dehors des bounds en utilisant les bounds + normale
+    // Cela garantit que même si le rectangle bleu est mal positionné, le poisson sera TOUJOURS dehors
+    const bounds = this.roomBounds;
+    let baseX = opening.position.x;
+    let baseZ = opening.position.z;
+
+    // Ajuster baseX/baseZ pour être SUR le bord des bounds selon la normale
+    if (Math.abs(opening.normal.x) > 0.5) {
+      // Mur Est/Ouest
+      baseX = opening.normal.x > 0 ? bounds.maxX : bounds.minX;
+    }
+    if (Math.abs(opening.normal.z) > 0.5) {
+      // Mur Nord/Sud
+      baseZ = opening.normal.z > 0 ? bounds.maxZ : bounds.minZ;
+    }
+
+    // Position de départ: bord des bounds + normal * spawnDistance (normal pointe vers extérieur)
+    const startPos = {
+      x: baseX + opening.normal.x * spawnDistance,
+      y: opening.position.y + (Math.random() - 0.5) * opening.size.height * 0.4,
+      z: baseZ + opening.normal.z * spawnDistance
+    };
+
+    console.log(`🚪 SPAWN FROM OPENING:`);
+    console.log(`   Opening at (${opening.position.x.toFixed(2)}, ${opening.position.y.toFixed(2)}, ${opening.position.z.toFixed(2)})`);
+    console.log(`   Adjusted base: (${baseX.toFixed(2)}, ${baseZ.toFixed(2)}) [bord des bounds]`);
+    console.log(`   Normal: (${opening.normal.x}, ${opening.normal.y}, ${opening.normal.z})`);
+    console.log(`   Distance: ${spawnDistance.toFixed(2)}m`);
+    console.log(`   Fish spawn at (${startPos.x.toFixed(2)}, ${startPos.y.toFixed(2)}, ${startPos.z.toFixed(2)})`);
+
+    // Calculer la vélocité vers l'ouverture (normale inversée pour aller vers l'intérieur)
+    // Vitesse constante pour éviter le saccadé
+    const speed = 0.4; // Vitesse en mètres par seconde (40cm/s = lent et fluide)
+    const velocity = {
+      x: -opening.normal.x * speed, // Inversé pour aller vers l'intérieur
+      y: (Math.random() - 0.5) * speed * 0.1, // Très légère variation verticale
+      z: -opening.normal.z * speed  // Inversé pour aller vers l'intérieur
+    };
+
+    console.log(`   Velocity: (${velocity.x.toFixed(3)}, ${velocity.y.toFixed(3)}, ${velocity.z.toFixed(3)})`);
+
+    // Calculer la durée basée sur la distance (pour arriver au bon moment)
+    const travelTime = (spawnDistance + 2.0) / speed; // +2m pour traverser complètement
+
+    return {
+      position: startPos,
+      velocity: velocity,
+      entryMode: true, // Flag pour ignorer les collisions pendant traversée
+      entryDuration: travelTime * 1000, // Convertir en millisecondes
+      spawnDistance: spawnDistance // Pour debug
+    };
+  },
+
   _spawnFishesInRoom: function (roomData) {
     console.debug('🚀 DÉBUT SPAWN - spawned:', this.spawned, 'count:', this.data.count);
     console.debug('   roomData:', roomData);
@@ -874,6 +990,20 @@ AFRAME.registerComponent('fish-spawner', {
     console.debug(`   Limites Y: ${minY.toFixed(2)} à ${maxY.toFixed(2)} (hauteur: ${(maxY - minY).toFixed(2)}m)`);
     console.debug(`   Limites Z: ${minZ.toFixed(2)} à ${maxZ.toFixed(2)} (profondeur: ${(maxZ - minZ).toFixed(2)}m)`);
 
+    const openingsCount = window.FISH_ZONE.openings ? window.FISH_ZONE.openings.length : 0;
+    console.log(`🚪 ${openingsCount} ouverture(s) détectée(s) - 100% des poissons entreront par les ouvertures`);
+    if (openingsCount === 0) {
+      console.warn('⚠️ AUCUNE OUVERTURE DÉTECTÉE ! Les poissons ne seront pas spawnés.');
+      console.warn('   Scannez la pièce pour détecter les portes/fenêtres (rectangles bleus)');
+      return; // Ne pas spawner si aucune ouverture
+    }
+
+    if (openingsCount > 0) {
+      window.FISH_ZONE.openings.forEach((op, idx) => {
+        console.log(`   ${idx + 1}. ${op.type} (${op.wall}): ${op.size.width.toFixed(2)}m at (${op.position.x.toFixed(2)}, ${op.position.y.toFixed(2)}, ${op.position.z.toFixed(2)})`);
+      });
+    }
+
     if (this.orientedBox) {
       console.log(`   ✅ Zone ORIENTÉE - rotation: ${(this.orientedBox.rotationY * 180 / Math.PI).toFixed(1)}°`);
     }
@@ -903,82 +1033,38 @@ AFRAME.registerComponent('fish-spawner', {
 
       // Position aléatoire DANS la zone orientée ou les bounds
       let x, y, z;
+      let spawnData = null; // Pour stocker velocity et entryMode si spawn depuis opening
 
-      if (this.orientedBox) {
-        // Spawner dans l'espace local de la box orientée
-        const box = this.orientedBox;
-        const spawnMargin = 0.3;
-        // No per-model shrink factors needed now (dory/nemo removed)
-        const shrinkFactor = 1.0;
-        const localX = (Math.random() - 0.5) * (box.width - spawnMargin * 2) * shrinkFactor;
-        const localZ = (Math.random() - 0.5) * (box.depth - spawnMargin * 2) * shrinkFactor;
+      // 🚪 100% des poissons viennent des ouvertures (portes/fenêtres détectées)
+      const openings = window.FISH_ZONE.openings || [];
 
-        // Transformer en coordonnées monde en utilisant la matrice fournie par room-detection si disponible
-        const localVec = new THREE.Vector3(localX, 0, localZ);
-        if (box.matrix) {
-          const worldVec = localVec.clone().applyMatrix4(box.matrix);
-          x = worldVec.x;
-          z = worldVec.z;
-        } else {
-          const cos = Math.cos(box.rotationY);
-          const sin = Math.sin(box.rotationY);
-          // local -> world : x = cx + xl*cos - zl*sin ; z = cz + xl*sin + zl*cos
-          x = box.centerX + (localX * cos - localZ * sin);
-          z = box.centerZ + (localX * sin + localZ * cos);
-        }
-        y = minY + Math.random() * (maxY - minY);
-
-        // Vérification: recalculer local coords depuis world pour valider l'appartenance
-        let localX_check = localX;
-        let localZ_check = localZ;
-        if (box.inverseMatrix) {
-          const w = new THREE.Vector3(x, 0, z).applyMatrix4(box.inverseMatrix);
-          localX_check = w.x;
-          localZ_check = w.z;
-        }
-        const inside = Math.abs(localX_check) <= (box.halfWidth - 0.25) && Math.abs(localZ_check) <= (box.halfDepth - 0.25);
-        if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
-          console.debug(`🐟 Fish #${i + 1} spawned (oriented) at (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}) inside:${inside}`);
-        }
-      } else {
-        // Spawner classique dans les bounds rectangulaires
-        // No per-model shrink factors needed now (dory/nemo removed)
-        const shrinkFactor = 1.0;
-        const centerX_rect = (minX + maxX) / 2;
-        const centerZ_rect = (minZ + maxZ) / 2;
-        const rangeX = (maxX - minX) * shrinkFactor;
-        const rangeZ = (maxZ - minZ) * shrinkFactor;
-        x = centerX_rect - rangeX / 2 + Math.random() * rangeX;
-        z = centerZ_rect - rangeZ / 2 + Math.random() * rangeZ;
-        y = minY + Math.random() * (maxY - minY);
-
-        if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
-          console.debug(`🐟 Fish #${i + 1} spawned (bounds) at (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
-        }
-      }
-      // Ensure the spawn position is strictly inside the room bounds (fix fish outside zone)
-      // Pass the chosen model so we can apply per-model extra margins (for models with large pivots)
-      let clamped = this._clampSpawnPosition({ x, y, z }, chosen);
-      if (clamped.x !== x || clamped.y !== y || clamped.z !== z) {
-        if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
-          console.debug(`⚙️ Fish #${i + 1} position corrected -> (${clamped.x.toFixed(2)}, ${clamped.y.toFixed(2)}, ${clamped.z.toFixed(2)})`);
-        }
+      if (openings.length === 0) {
+        console.error(`❌ Fish #${i + 1} - Impossible de spawner : aucune ouverture détectée !`);
+        continue; // Skip ce poisson
       }
 
-      // Vérifier que le poisson ne spawn pas dans un obstacle (table, meuble)
-      if (this._isSpawnInsideObstacle(clamped)) {
-        // Réessayer jusqu'à 15 fois pour trouver une position hors obstacle
-        for (let attempt = 0; attempt < 15; attempt++) {
-          const retryX = minX + Math.random() * (maxX - minX);
-          const retryY = minY + Math.random() * (maxY - minY);
-          const retryZ = minZ + Math.random() * (maxZ - minZ);
-          const retryClamped = this._clampSpawnPosition({ x: retryX, y: retryY, z: retryZ }, chosen);
-          if (!this._isSpawnInsideObstacle(retryClamped)) {
-            clamped = retryClamped;
-            break;
-          }
-        }
+      // Choisir une ouverture aléatoire
+      const opening = openings[Math.floor(Math.random() * openings.length)];
+      spawnData = this._spawnFishFromOpening(opening);
+      x = spawnData.position.x;
+      y = spawnData.position.y;
+      z = spawnData.position.z;
+
+      console.log(`🚪 Fish #${i + 1} spawned from ${opening.type} (${opening.wall})`);
+      console.log(`   Final position: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`);
+      console.log(`   Room bounds: X[${minX.toFixed(2)}, ${maxX.toFixed(2)}] Z[${minZ.toFixed(2)}, ${maxZ.toFixed(2)}]`);
+
+      // Vérifier que le poisson est bien EN DEHORS des bounds
+      const isOutside = x < minX || x > maxX || z < minZ || z > maxZ;
+      console.log(`   ${isOutside ? '✅ OUTSIDE room' : '❌ INSIDE room (ERREUR!)'}`);
+
+      if (!isOutside) {
+        console.warn(`   ⚠️ Fish spawned INSIDE instead of OUTSIDE! Check opening position.`);
       }
+
+      // NE PAS CLAMPER - le poisson doit rester dehors
+      let clamped = { x, y, z };
+
       fish.setAttribute('position', `${clamped.x} ${clamped.y} ${clamped.z}`);
 
       // Mark as fish, collision target and grabbable
@@ -993,8 +1079,20 @@ AFRAME.registerComponent('fish-spawner', {
 
       // Add movement component (slightly increased so fishes can escape walls)
       // Make fishes ultra-slow overall but a bit faster than before: range ~0.00001 - 0.00003
-      const baseSpeed = 0.00001 + Math.random() * 0.00002; // 0.00001 - 0.00003
-      fish.setAttribute('fish-movement', `speed: ${baseSpeed}; bounds: ${this.data.area}`);
+      const baseSpeed = spawnData ? 0.00001 : (0.00001 + Math.random() * 0.00002); // Vitesse normale après entrée
+      let movementConfig = `speed: ${baseSpeed}; bounds: ${this.data.area}`;
+
+      // Si spawn depuis opening, ajouter entryMode et initialVelocity
+      if (spawnData) {
+        movementConfig += `; entryMode: true; entryDuration: ${spawnData.entryDuration}`;
+        movementConfig += `; initialVelocity: ${spawnData.velocity.x} ${spawnData.velocity.y} ${spawnData.velocity.z}`;
+
+        if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
+          console.debug(`🚪 Fish will enter from distance ${spawnData.spawnDistance.toFixed(2)}m over ${(spawnData.entryDuration / 1000).toFixed(1)}s`);
+        }
+      }
+
+      fish.setAttribute('fish-movement', movementConfig);
 
       parent.appendChild(fish);
       this.fishes.push(fish);
