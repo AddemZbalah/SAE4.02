@@ -339,12 +339,15 @@ AFRAME.registerComponent('fish-movement', {
     }
 
     // Limites locales
-    const halfW = box.halfWidth - margin;
-    const halfD = box.halfDepth - margin;
+    // Si les bounds locaux exacts sont disponibles, les utiliser (plus précis que ±halfW/D)
+    const localMinX = (box.localMinX !== undefined) ? box.localMinX + margin : -box.halfWidth + margin;
+    const localMaxX = (box.localMaxX !== undefined) ? box.localMaxX - margin : box.halfWidth - margin;
+    const localMinZ = (box.localMinZ !== undefined) ? box.localMinZ + margin : -box.halfDepth + margin;
+    const localMaxZ = (box.localMaxZ !== undefined) ? box.localMaxZ - margin : box.halfDepth - margin;
 
     // Debug: afficher coordonnées locales et limites uniquement en mode debug
     if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) {
-      console.debug('🐟 COLLISION_DEBUG local:', { localX: localX.toFixed(2), localZ: localZ.toFixed(2), halfW: halfW.toFixed(2), halfD: halfD.toFixed(2) });
+      console.debug('🐟 COLLISION_DEBUG local:', { localX: localX.toFixed(2), localZ: localZ.toFixed(2), localMinX: localMinX.toFixed(2), localMaxX: localMaxX.toFixed(2) });
     }
 
     let correctedLocalX = localX;
@@ -357,26 +360,26 @@ AFRAME.registerComponent('fish-movement', {
     const localNormal = new THREE.Vector3(0, 0, 0);
 
     // Collision X local (left/right)
-    if (localX < -halfW) {
-      correctedLocalX = -halfW + 0.15;
+    if (localX < localMinX) {
+      correctedLocalX = localMinX + 0.15;
       localNormal.x = 1; // Normale pointe vers l'intérieur (droite)
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce LEFT (oriented) - localX:', localX.toFixed(2));
-    } else if (localX > halfW) {
-      correctedLocalX = halfW - 0.15;
+    } else if (localX > localMaxX) {
+      correctedLocalX = localMaxX - 0.15;
       localNormal.x = -1; // Normale pointe vers l'intérieur (gauche)
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce RIGHT (oriented) - localX:', localX.toFixed(2));
     }
 
     // Collision Z local (front/back)
-    if (localZ < -halfD) {
-      correctedLocalZ = -halfD + 0.15;
+    if (localZ < localMinZ) {
+      correctedLocalZ = localMinZ + 0.15;
       localNormal.z = 1; // Normale pointe vers l'intérieur
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce FRONT (oriented) - localZ:', localZ.toFixed(2));
-    } else if (localZ > halfD) {
-      correctedLocalZ = halfD - 0.15;
+    } else if (localZ > localMaxZ) {
+      correctedLocalZ = localMaxZ - 0.15;
       localNormal.z = -1; // Normale pointe vers l'intérieur
       bounced = true;
       if (this.el.sceneEl && this.el.sceneEl.is && this.el.sceneEl.is('debug')) console.debug('🔴 Bounce BACK (oriented) - localZ:', localZ.toFixed(2));
@@ -1225,10 +1228,12 @@ AFRAME.registerComponent('fish-spawner', {
       // Clamp in local space with a small base margin + per-model extra
       const baseMargin = 0.15;
       const margin = baseMargin + extra;
-      const halfW = box.halfWidth - margin;
-      const halfD = box.halfDepth - margin;
-      local.x = Math.max(-halfW, Math.min(halfW, local.x));
-      local.z = Math.max(-halfD, Math.min(halfD, local.z));
+      const clampMinX = (box.localMinX !== undefined) ? box.localMinX + margin : -box.halfWidth + margin;
+      const clampMaxX = (box.localMaxX !== undefined) ? box.localMaxX - margin : box.halfWidth - margin;
+      const clampMinZ = (box.localMinZ !== undefined) ? box.localMinZ + margin : -box.halfDepth + margin;
+      const clampMaxZ = (box.localMaxZ !== undefined) ? box.localMaxZ - margin : box.halfDepth - margin;
+      local.x = Math.max(clampMinX, Math.min(clampMaxX, local.x));
+      local.z = Math.max(clampMinZ, Math.min(clampMaxZ, local.z));
       // Clamp Y between floor and ceiling
       const minY = this.floorY + 0.2 + extra; // push slightly higher for big fish
       const maxY = this.ceilingY - 0.2 - extra;

@@ -52,6 +52,8 @@ AFRAME.registerComponent('room-detection', {
     this.xrSession = null;
     this.xrRefSpace = null;
     this.xrSessionRequested = false;
+    this._pendingVisualRebuild = false;  // Flag pour reconstruire les visuels après xrRefSpace reset
+    this._refSpaceResetHandler = null;   // Référence au handler pour pouvoir le retirer
 
     // Créer l'interface de scan
     this.createScanUI();
@@ -218,7 +220,12 @@ AFRAME.registerComponent('room-detection', {
       depth: depth,
       rotationY: rotationY * Math.PI / 180, // En radians
       halfWidth: width / 2,
-      halfDepth: depth / 2
+      halfDepth: depth / 2,
+      // Bounds locaux EXACTS (le polygone n'est pas forcément centré à l'origine locale)
+      localMinX: localMinX,
+      localMaxX: localMaxX,
+      localMinZ: localMinZ,
+      localMaxZ: localMaxZ
     };
 
     // Stocker la matrice de transformation du plan (local -> world) et son inverse
@@ -429,13 +436,59 @@ AFRAME.registerComponent('room-detection', {
     this.el.sceneEl.appendChild(this.scanPanel);
   },
 
+  // 🎮 S'assurer que les laser-controls sont actifs après l'entrée en XR
+  ensureLaserControlsActive: function () {
+    setTimeout(() => {
+      const leftHand = document.querySelector('#leftHand');
+      const rightHand = document.querySelector('#rightHand');
+
+      if (leftHand) {
+        const laserControls = leftHand.components['laser-controls'];
+        const raycaster = leftHand.components['raycaster'];
+        if (laserControls) {
+          console.log('🎮 Réactivation laser-controls main gauche');
+          laserControls.pause();
+          laserControls.play();
+        }
+        if (raycaster) {
+          raycaster.refreshObjects();
+        }
+      }
+
+      if (rightHand) {
+        const laserControls = rightHand.components['laser-controls'];
+        const raycaster = rightHand.components['raycaster'];
+        if (laserControls) {
+          console.log('🎮 Réactivation laser-controls main droite');
+          laserControls.pause();
+          laserControls.play();
+        }
+        if (raycaster) {
+          raycaster.refreshObjects();
+        }
+      }
+    }, 500);
+  },
+
   onEnterXR: function () {
-    console.log('🥽 Entrée en mode XR - Démarrage du scan');
+    console.log('🥽 Entrée en mode XR');
 
     // Marquer qu'on a une session XR pour éviter le mode test
     this.xrSessionRequested = true;
 
-    // Réinitialiser l'état de scan et les données globales partagées
+    // ✅ VÉRIFIER SI UN SCAN A DÉJÀ ÉTÉ COMPLÉTÉ
+    if (this.scanComplete) {
+      console.log('✅ Scan déjà complété - Conservation des visualisations existantes (pas de recréation cross-session)');
+      // Ne PAS effacer ni recréer les visuels : ils ont des positions monde absolues
+      // qui restent valides dans la même session XR.
+      // Juste réinitialiser le hit-test source pour la nouvelle session.
+      this.initializeXRSession(true);
+      return;
+    }
+
+    console.log('🔄 Premier scan - Démarrage de l\'analyse');
+
+    // Réinitialiser l'état de scan et les données globales partagées (UNIQUEMENT si premier scan)
     try {
       if (window && window.FISH_ZONE) {
         window.FISH_ZONE.roomBounds = null;
@@ -459,7 +512,6 @@ AFRAME.registerComponent('room-detection', {
     this.hitSurfaces = new Map();
     this.clearPlaneVisuals();
     this.isScanning = false;
-    this.scanComplete = false;
     this.scanStartTime = 0;
     this.floorY = 0;
 
@@ -473,11 +525,59 @@ AFRAME.registerComponent('room-detection', {
 
     // Attendre que la session soit prête
     setTimeout(() => {
-      this.initializeXRSession();
+      this.initializeXRSession(false); // false = mode normal (nouveau scan)
     }, 1000);
   },
 
-  initializeXRSession: async function () {
+  recreateVisualsFromSavedData: function () {
+    if (!this.xrSession || !this.xrRefSpace) {
+      console.warn('⚠️ Impossible de recréer les visualisations : session XR non disponible');
+      return;
+    }
+
+    console.log('🎨 Recréation des visualisations avec le nouveau référence space...');
+
+    const renderer = this.el.sceneEl.renderer;
+    if (!renderer?.xr) return;
+
+    const frame = renderer.xr.getFrame();
+    if (!frame) return;
+
+    // Recréer les visualisations pour tous les plans détectés
+    this.detectedPlanes.forEach((planeData, plane) => {
+      try {
+        // Obtenir la pose actuelle du plan dans le NOUVEAU référence space
+        const currentPose = frame.getPose(plane.planeSpace, this.xrRefSpace);
+        if (!currentPose) return;
+
+        // Mettre à jour la pose dans les données sauvegardées
+        planeData.pose = currentPose;
+        planeData._visualCreated = false; // Réinitialiser le flag
+
+        // Recréer la visualisation avec la nouvelle pose
+        if (this.data.showPlanes) {
+          this.createPlaneVisual(plane, planeData);
+        }
+      } catch (err) {
+        console.warn('Erreur lors de la recréation de la visualisation:', err);
+      }
+    });
+
+    // Recréer la boîte de spawn zone si on a les données
+    if (window.FISH_ZONE && window.FISH_ZONE.roomBounds) {
+      const roomData = {
+        bounds: window.FISH_ZONE.roomBounds,
+        floorY: window.FISH_ZONE.floorY || this.floorY,
+        height: (window.FISH_ZONE.ceilingY || 2.5) - (window.FISH_ZONE.floorY || 0),
+        orientedBox: window.FISH_ZONE.orientedBox
+      };
+      this.createSpawnZoneBoundingBox(roomData);
+    }
+
+    console.log('✅ Visualisations recréées avec succès');
+  },
+
+  initializeXRSession: async function (resumeMode = false) {
     const renderer = this.el.sceneEl.renderer;
     if (!renderer?.xr) {
       console.warn('❌ Renderer XR non disponible');
@@ -486,6 +586,24 @@ AFRAME.registerComponent('room-detection', {
 
     this.xrSession = renderer.xr.getSession();
     this.xrRefSpace = renderer.xr.getReferenceSpace();
+
+    // ✅ Écouter les resets du reference space (se produisent quand le Quest re-localise
+    // après enlèvement/remise du casque dans la même session)
+    if (this.xrRefSpace) {
+      // Retirer l'ancien handler si existant
+      if (this._refSpaceResetHandler && this._prevXrRefSpace) {
+        try { this._prevXrRefSpace.removeEventListener('reset', this._refSpaceResetHandler); } catch (e) { /* ignore */ }
+      }
+      this._refSpaceResetHandler = () => {
+        console.log('🔄 XRReferenceSpace reset détecté - visuels à reconstruire');
+        // Mettre à jour le reference space et lever le flag
+        const upToDateRefSpace = this.el.sceneEl.renderer.xr.getReferenceSpace();
+        if (upToDateRefSpace) this.xrRefSpace = upToDateRefSpace;
+        if (this.scanComplete) this._pendingVisualRebuild = true;
+      };
+      this._prevXrRefSpace = this.xrRefSpace;
+      this.xrRefSpace.addEventListener('reset', this._refSpaceResetHandler);
+    }
 
     if (!this.xrSession) {
       console.warn('❌ Session XR non disponible');
@@ -520,11 +638,17 @@ AFRAME.registerComponent('room-detection', {
       console.warn('⚠️ Hit-test viewer non disponible:', error.message);
     }
 
-    // Créer un curseur visuel pour montrer où on pointe
-    this.createScanCursor();
+    // Créer un curseur visuel pour montrer où on pointe (seulement si pas en mode resume)
+    if (!resumeMode && !this.cursorEl) {
+      this.createScanCursor();
+    }
 
-    // Démarrer le scan
-    this.startScan();
+    // Démarrer le scan UNIQUEMENT si pas en mode resume
+    if (!resumeMode) {
+      this.startScan();
+    } else {
+      console.log('📍 Mode resume - Scan non relancé');
+    }
   },
 
   // Créer un curseur visuel pour indiquer les surfaces détectées
@@ -574,6 +698,32 @@ AFRAME.registerComponent('room-detection', {
 
   onExitXR: function () {
     console.log('🚪 Sortie du mode XR');
+
+    // ✅ NE PAS nettoyer si le scan est complété (pour garder la position stable)
+    if (this.scanComplete) {
+      console.log('   ℹ️ Scan terminé - Conservation des données pour éviter décalage');
+      // Nettoyer juste les hit-test sources
+      if (this.hitTestSource) {
+        this.hitTestSource.cancel();
+        this.hitTestSource = null;
+      }
+      if (this.controllerHitTestSource) {
+        this.controllerHitTestSource.cancel();
+        this.controllerHitTestSource = null;
+      }
+      this.hitTestSourceRequested = false;
+      this.controllerHitTestRequested = false;
+
+      // Cacher le curseur
+      if (this.cursorEl) {
+        this.cursorEl.object3D.visible = false;
+      }
+
+      // NE PAS appeler clearPlaneVisuals() ni changer isScanning
+      return;
+    }
+
+    // Si le scan n'est pas terminé, nettoyer normalement
     this.isScanning = false;
     this.scanPanel.setAttribute('visible', 'false');
     this.clearPlaneVisuals();
@@ -597,9 +747,32 @@ AFRAME.registerComponent('room-detection', {
   },
 
   tick: function (time, deltaTime) {
-    // Continuer même après le scan si continuousDetection est activé
-    const shouldDetect = this.isScanning ||
-      (this.data.continuousDetection && this.scanComplete);
+    // ✅ Reconstruire les visuels si un reset du reference space a eu lieu
+    if (this._pendingVisualRebuild && this.scanComplete) {
+      const renderer = this.el.sceneEl.renderer;
+      if (renderer?.xr) {
+        const frame = renderer.xr.getFrame();
+        if (frame) {
+          this._pendingVisualRebuild = false;
+          this._rebuildVisualsAfterReset(frame);
+          return;
+        }
+      }
+    }
+
+    // ✅ NE PAS continuer à détecter de nouveaux plans si le scan est déjà complété
+    // Cela évite les duplications quand l'utilisateur enlève et remet le casque
+    if (this.scanComplete && this.data.continuousDetection) {
+      // En mode continuous, on peut continuer le hit-test pour le curseur, 
+      // mais PAS la détection de nouveaux plans
+      if (this.xrSession && this.xrRefSpace) {
+        this.performHitTest(); // Juste pour le curseur visuel
+      }
+      return;
+    }
+
+    // Continuer le scan normal si pas encore complété
+    const shouldDetect = this.isScanning;
 
     if (!shouldDetect || !this.xrSession || !this.xrRefSpace) return;
 
@@ -1141,6 +1314,74 @@ AFRAME.registerComponent('room-detection', {
     }
 
     this.scanText.setAttribute('value', details);
+  },
+
+  // Reconstruit tous les visuels (plans + boîte spawn) après un reset XR reference space
+  _rebuildVisualsAfterReset: function (frame) {
+    console.log('🔄 Reconstruction des visuels après reset du reference space...');
+    if (!this.xrRefSpace) return;
+
+    // 1. Supprimer les anciens visuels THREE.js
+    this.clearPlaneVisuals();
+
+    // 2. Supprimer l'ancienne boîte de spawn
+    const oldBox = document.querySelector('#spawn-zone-bounds');
+    if (oldBox && oldBox.parentNode) oldBox.parentNode.removeChild(oldBox);
+
+    // 3. Recréer les visuels des plans avec les nouvelles poses
+    if (this.data.showPlanes) {
+      this.detectedPlanes.forEach((planeData, plane) => {
+        try {
+          const newPose = frame.getPose(plane.planeSpace, this.xrRefSpace);
+          if (!newPose) return;
+          planeData.pose = newPose;
+          planeData._visualCreated = false;
+          this.createPlaneVisual(plane, planeData);
+        } catch (err) {
+          // planeSpace invalide (plan disparu) - ignorer
+        }
+      });
+    }
+
+    // 4. Recréer la boîte de spawn zone en utilisant la nouvelle pose du sol
+    try {
+      let largestFloorEntry = null;
+      let maxArea = 0;
+      this.floorPlanes.forEach(fp => {
+        const area = fp.data?.dimensions?.area || 0;
+        if (area > maxArea) { maxArea = area; largestFloorEntry = fp; }
+      });
+
+      if (largestFloorEntry) {
+        const newFloorPose = frame.getPose(largestFloorEntry.plane.planeSpace, this.xrRefSpace);
+        if (newFloorPose) {
+          // Mettre à jour la pose sauvegardée
+          largestFloorEntry.data.pose = newFloorPose;
+          const height = Math.max(1.5, (window.FISH_ZONE?.ceilingY || 2.5) - (window.FISH_ZONE?.floorY || this.floorY));
+          this.createSpawnZoneBoundingBox({
+            floorPolygon: largestFloorEntry.data.polygon,
+            floorPose: newFloorPose,
+            height: height,
+            floorY: window.FISH_ZONE?.floorY || this.floorY
+          });
+          console.log('✅ Boîte spawn reconstruite avec la nouvelle pose du sol');
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Impossible de re-poser la boîte spawn via planeSpace:', err);
+    }
+
+    // Fallback : recréer la boîte avec les données sauvegardées (sans polygon)
+    if (window.FISH_ZONE?.roomBounds) {
+      this.createSpawnZoneBoundingBox({
+        bounds: window.FISH_ZONE.roomBounds,
+        floorY: window.FISH_ZONE.floorY || this.floorY,
+        height: (window.FISH_ZONE.ceilingY || 2.5) - (window.FISH_ZONE.floorY || 0)
+      });
+    }
+
+    console.log('✅ Visuels reconstruits après reset');
   },
 
   clearPlaneVisuals: function () {
