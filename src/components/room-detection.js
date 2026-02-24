@@ -1,73 +1,53 @@
-// ============================================
-// COMPOSANT ROOM-DETECTION : Détection complète de l'environnement
-// Code complet du professeur BenoitCrespin
-// https://github.com/BenoitCrespin/SAE4.DWeb-DI.02-XR/
-// ============================================
+// COMPOSANT ROOM-DETECTION : Détection de l'environnement XR
 AFRAME.registerComponent('room-detection', {
   schema: {
     debug: { type: 'boolean', default: true },
     scanDuration: { type: 'number', default: 15000 },
     showPlanes: { type: 'boolean', default: true },
     continuousDetection: { type: 'boolean', default: true },
-    // Si true, autorise l'émission automatique de données de test (development only)
     enableTest: { type: 'boolean', default: false }
   },
 
-
   init: function () {
-    // Bounds de la pièce
     this.roomBounds = {
       minX: Infinity, maxX: -Infinity,
       minY: Infinity, maxY: -Infinity,
       minZ: Infinity, maxZ: -Infinity
     };
 
-    // Stockage des plans détectés par catégorie (approche du professeur)
     this.detectedPlanes = new Map();
-    this.floorPlanes = [];      // Sols (horizontal bas)
-    this.ceilingPlanes = [];    // Plafonds (horizontal haut)
-    this.wallPlanes = [];       // Murs (vertical)
-    this.obstaclePlanes = [];   // Obstacles (tables, meubles - horizontal milieu)
-    this.openings = [];         // Portes et fenêtres détectées
-    this.openings = [];         // Portes et fenêtres détectées
+    this.floorPlanes = [];
+    this.ceilingPlanes = [];
+    this.wallPlanes = [];
+    this.obstaclePlanes = [];
+    this.openings = [];
 
-    // Hit-test (style du professeur)
-    this.hitTestSource = null;              // Hit-test depuis la vue (viewer)
-    this.controllerHitTestSource = null;    // Hit-test depuis le contrôleur droit
+    this.hitTestSource = null;
+    this.controllerHitTestSource = null;
     this.hitTestSourceRequested = false;
     this.controllerHitTestRequested = false;
-    this.hitSurfaces = new Map();           // Surfaces détectées
-    this.cursorEl = null;                   // Curseur visuel de détection
+    this.hitSurfaces = new Map();
+    this.cursorEl = null;
 
-    // Visualisations
     this.planeMeshes = [];
-
-    // État du scan
     this.isScanning = false;
     this.scanComplete = false;
     this.scanStartTime = 0;
     this.floorY = 0;
 
-    // Sessions XR
     this.xrSession = null;
     this.xrRefSpace = null;
     this.xrSessionRequested = false;
-    this._pendingVisualRebuild = false;  // Flag pour reconstruire les visuels après xrRefSpace reset
-    this._refSpaceResetHandler = null;   // Référence au handler pour pouvoir le retirer
+    this._pendingVisualRebuild = false;
+    this._resetDeltaMatrix = null;
+    this._refSpaceResetHandler = null;
 
-    // Créer l'interface de scan
     this.createScanUI();
-
-    // Écouter les événements XR
     this.el.sceneEl.addEventListener('enter-vr', this.onEnterXR.bind(this));
     this.el.sceneEl.addEventListener('exit-vr', this.onExitXR.bind(this));
 
-    console.log('🏠 Room detection initialisé - Approche du professeur Benoit Crespin');
-
-    // MODE TEST: Si pas en VR après 8 secondes, émettre des données de test
+    // Mode test : émettre des données simulées si WebXR absent
     setTimeout(async () => {
-      // TEST MODE: n'émettre des données de test QUE si explicitement autorisé
-      // via l'attribut `enableTest` du composant ou le paramètre d'URL `allowTest=1`.
       try {
         const urlParams = (typeof window !== 'undefined' && window.location && window.location.search)
           ? new URLSearchParams(window.location.search)
@@ -92,11 +72,7 @@ AFRAME.registerComponent('room-detection', {
   },
 
   emitTestRoomData: function () {
-    console.log('🧪 MODE TEST: Émission de room-scanned avec données simulées');
-
     this.scanComplete = true;
-
-    // Données de test pour le développement sur PC
     const testData = {
       bounds: {
         minX: -3, maxX: 3,
@@ -116,29 +92,17 @@ AFRAME.registerComponent('room-detection', {
       allPlanes: new Map()
     };
 
-    console.log('📐 Dimensions de test:');
-    console.log(`   - Largeur: ${testData.width}m`);
-    console.log(`   - Profondeur: ${testData.depth}m`);
-    console.log(`   - Hauteur: ${testData.height}m`);
-    console.log(`   - Centre: (${testData.centerX}, ${testData.centerZ})`);
-
-    // Créer une boîte de visualisation pour le mode test
     this.createTestBoundingBox(testData);
-
     this.el.sceneEl.emit('room-scanned', testData);
   },
 
   createTestBoundingBox: function (data) {
-    // Créer une boîte fil-de-fer pour visualiser la zone de spawn
     this.createSpawnZoneBoundingBox(data);
   },
 
   createSpawnZoneBoundingBox: function (data) {
-    // Supprimer uniquement l'ancienne boîte de spawn si elle existe (ne PAS nettoyer les plane visuals)
     const oldBox = document.querySelector('#spawn-zone-bounds');
-    if (oldBox) {
-      oldBox.parentNode.removeChild(oldBox);
-    }
+    if (oldBox) oldBox.parentNode.removeChild(oldBox);
 
     // Si on a le polygone du sol, calculer les VRAIS bounds à partir des vertices transformés
     if (data.floorPolygon && data.floorPolygon.length >= 3 && data.floorPose) {
@@ -243,95 +207,7 @@ AFRAME.registerComponent('room-detection', {
     box.setAttribute('material', 'color: #ff0000; opacity: 0.12; transparent: true; wireframe: true; side: double');
     box.setAttribute('geometry', 'primitive: box');
 
-    console.log('📦 ZONE ROUGE créée avec rotation du sol :');
-    console.log(`   Position: (${centerLocal.x.toFixed(2)}, ${(data.floorY + height / 2).toFixed(2)}, ${centerLocal.z.toFixed(2)})`);
-    console.log(`   Rotation Y: ${rotationY.toFixed(1)}°`);
-    console.log(`   Dimensions locales: ${width.toFixed(2)}m x ${depth.toFixed(2)}m`);
-    console.log(`   Bounds monde X: ${realMinX.toFixed(2)} à ${realMaxX.toFixed(2)}`);
-    console.log(`   Bounds monde Z: ${realMinZ.toFixed(2)} à ${realMaxZ.toFixed(2)}`);
-    console.log('   ✅ Poissons utiliseront bounds monde pour collisions');
-
     this.el.sceneEl.appendChild(box);
-  },
-
-  createFloorPolygonVisualization: function (data) {
-    const polygon = data.floorPolygon;
-    const pose = data.floorPose;
-    const height = data.height;
-
-    console.log('📦 Création visualisation EXACTE basée sur polygone du sol (', polygon.length, 'vertices)');
-
-    // Créer une entité pour contenir la visualisation
-    const container = document.createElement('a-entity');
-    container.setAttribute('id', 'spawn-zone-bounds');
-
-    // Matrice de transformation du sol
-    const matrix = new THREE.Matrix4();
-    matrix.fromArray(pose.transform.matrix);
-
-    // 1. Créer le contour du sol (en bas)
-    const bottomPoints = [];
-    polygon.forEach(v => {
-      const vec = new THREE.Vector3(v.x, v.y, v.z);
-      vec.applyMatrix4(matrix);
-      bottomPoints.push(vec);
-    });
-
-    // 2. Créer le contour du plafond (même polygone mais +height en Y)
-    const topPoints = bottomPoints.map(p =>
-      new THREE.Vector3(p.x, p.y + height, p.z)
-    );
-
-    // 3. Dessiner les contours horizontaux (sol et plafond) EN ROUGE (moins opaques)
-    this.drawPolygonLoop(bottomPoints, container, '#ff0000', 0.5);
-    this.drawPolygonLoop(topPoints, container, '#ff0000', 0.5);
-
-    // 4. Dessiner les arêtes verticales (coins) EN ROUGE
-    for (let i = 0; i < bottomPoints.length; i++) {
-      const lineGeom = new THREE.BufferGeometry().setFromPoints([
-        bottomPoints[i],
-        topPoints[i]
-      ]);
-      const lineMat = new THREE.LineBasicMaterial({
-        color: 0xff0000,
-        transparent: true,
-        opacity: 0.6,
-        linewidth: 2
-      });
-      const line = new THREE.Line(lineGeom, lineMat);
-      this.el.sceneEl.object3D.add(line);
-      this.planeMeshes.push(line);
-    }
-
-    // 5. Créer une surface semi-transparente pour le sol
-    const shape = new THREE.Shape();
-    shape.moveTo(polygon[0].x, polygon[0].z);
-    for (let i = 1; i < polygon.length; i++) {
-      shape.lineTo(polygon[i].x, polygon[i].z);
-    }
-    shape.closePath();
-
-    const shapeGeom = new THREE.ShapeGeometry(shape);
-    shapeGeom.rotateX(-Math.PI / 2);
-
-    const shapeMat = new THREE.MeshBasicMaterial({
-      color: 0xff0000,
-      transparent: true,
-      opacity: 0.12,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-
-    const shapeMesh = new THREE.Mesh(shapeGeom, shapeMat);
-    shapeMesh.matrixAutoUpdate = false;
-    shapeMesh.matrix.copy(matrix);
-
-    this.el.sceneEl.object3D.add(shapeMesh);
-    this.planeMeshes.push(shapeMesh);
-
-    console.log('✅ Visualisation polygonale créée - suit EXACTEMENT le sol détecté');
-
-    this.el.sceneEl.appendChild(container);
   },
 
   drawPolygonLoop: function (points, container, color, opacity) {
@@ -365,17 +241,10 @@ AFRAME.registerComponent('room-detection', {
     box.setAttribute('material', 'color: #ff0000; opacity: 0.12; transparent: true; wireframe: true; side: double');
     box.setAttribute('geometry', 'primitive: box');
 
-    console.log('📦 ZONE ROUGE créée (bounds du sol) :');
-    console.log(`   Position: (${centerX.toFixed(2)}, ${(data.floorY + data.height / 2).toFixed(2)}, ${centerZ.toFixed(2)})`);
-    console.log(`   Taille: ${width.toFixed(2)}m x ${data.height.toFixed(2)}m x ${depth.toFixed(2)}m`);
-    console.log(`   Bounds X: ${bounds.minX.toFixed(2)} à ${bounds.maxX.toFixed(2)}`);
-    console.log(`   Bounds Z: ${bounds.minZ.toFixed(2)} à ${bounds.maxZ.toFixed(2)}`);
-
     this.el.sceneEl.appendChild(box);
   },
 
   createScanUI: function () {
-    // Scan information panel visible in VR
     this.scanPanel = document.createElement('a-entity');
     this.scanPanel.setAttribute('id', 'scan-panel');
     this.scanPanel.setAttribute('position', '0 1.5 -1.5');
@@ -436,59 +305,28 @@ AFRAME.registerComponent('room-detection', {
     this.el.sceneEl.appendChild(this.scanPanel);
   },
 
-  // 🎮 S'assurer que les laser-controls sont actifs après l'entrée en XR
   ensureLaserControlsActive: function () {
     setTimeout(() => {
-      const leftHand = document.querySelector('#leftHand');
-      const rightHand = document.querySelector('#rightHand');
-
-      if (leftHand) {
-        const laserControls = leftHand.components['laser-controls'];
-        const raycaster = leftHand.components['raycaster'];
-        if (laserControls) {
-          console.log('🎮 Réactivation laser-controls main gauche');
-          laserControls.pause();
-          laserControls.play();
-        }
-        if (raycaster) {
-          raycaster.refreshObjects();
-        }
-      }
-
-      if (rightHand) {
-        const laserControls = rightHand.components['laser-controls'];
-        const raycaster = rightHand.components['raycaster'];
-        if (laserControls) {
-          console.log('🎮 Réactivation laser-controls main droite');
-          laserControls.pause();
-          laserControls.play();
-        }
-        if (raycaster) {
-          raycaster.refreshObjects();
-        }
-      }
+      ['#leftHand', '#rightHand'].forEach(sel => {
+        var hand = document.querySelector(sel);
+        if (!hand) return;
+        var lc = hand.components['laser-controls'];
+        var rc = hand.components['raycaster'];
+        if (lc) { lc.pause(); lc.play(); }
+        if (rc) rc.refreshObjects();
+      });
     }, 500);
   },
 
   onEnterXR: function () {
-    console.log('🥽 Entrée en mode XR');
-
-    // Marquer qu'on a une session XR pour éviter le mode test
     this.xrSessionRequested = true;
 
-    // ✅ VÉRIFIER SI UN SCAN A DÉJÀ ÉTÉ COMPLÉTÉ
     if (this.scanComplete) {
-      console.log('✅ Scan déjà complété - Conservation des visualisations existantes (pas de recréation cross-session)');
-      // Ne PAS effacer ni recréer les visuels : ils ont des positions monde absolues
-      // qui restent valides dans la même session XR.
-      // Juste réinitialiser le hit-test source pour la nouvelle session.
       this.initializeXRSession(true);
       return;
     }
 
-    console.log('🔄 Premier scan - Démarrage de l\'analyse');
-
-    // Réinitialiser l'état de scan et les données globales partagées (UNIQUEMENT si premier scan)
+    // Réinitialiser l'état de scan et les données globales
     try {
       if (window && window.FISH_ZONE) {
         window.FISH_ZONE.roomBounds = null;
@@ -503,7 +341,7 @@ AFRAME.registerComponent('room-detection', {
       // ignore
     }
 
-    // Réinitialiser l'état interne du composant pour forcer un nouveau scan propre
+    // Réinitialiser l'état interne
     this.detectedPlanes = new Map();
     this.floorPlanes = [];
     this.ceilingPlanes = [];
@@ -515,66 +353,13 @@ AFRAME.registerComponent('room-detection', {
     this.scanStartTime = 0;
     this.floorY = 0;
 
-    // Émettre un événement pour informer les autres composants (ex: fish-spawner) de réinitialisation
     try {
       this.el.sceneEl.emit('room-reset');
-      if (this.data.debug) console.log('🔁 room-reset émis pour réinitialiser les composants dépendants');
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) { /* ignore */ }
 
-    // Attendre que la session soit prête
     setTimeout(() => {
-      this.initializeXRSession(false); // false = mode normal (nouveau scan)
+      this.initializeXRSession(false);
     }, 1000);
-  },
-
-  recreateVisualsFromSavedData: function () {
-    if (!this.xrSession || !this.xrRefSpace) {
-      console.warn('⚠️ Impossible de recréer les visualisations : session XR non disponible');
-      return;
-    }
-
-    console.log('🎨 Recréation des visualisations avec le nouveau référence space...');
-
-    const renderer = this.el.sceneEl.renderer;
-    if (!renderer?.xr) return;
-
-    const frame = renderer.xr.getFrame();
-    if (!frame) return;
-
-    // Recréer les visualisations pour tous les plans détectés
-    this.detectedPlanes.forEach((planeData, plane) => {
-      try {
-        // Obtenir la pose actuelle du plan dans le NOUVEAU référence space
-        const currentPose = frame.getPose(plane.planeSpace, this.xrRefSpace);
-        if (!currentPose) return;
-
-        // Mettre à jour la pose dans les données sauvegardées
-        planeData.pose = currentPose;
-        planeData._visualCreated = false; // Réinitialiser le flag
-
-        // Recréer la visualisation avec la nouvelle pose
-        if (this.data.showPlanes) {
-          this.createPlaneVisual(plane, planeData);
-        }
-      } catch (err) {
-        console.warn('Erreur lors de la recréation de la visualisation:', err);
-      }
-    });
-
-    // Recréer la boîte de spawn zone si on a les données
-    if (window.FISH_ZONE && window.FISH_ZONE.roomBounds) {
-      const roomData = {
-        bounds: window.FISH_ZONE.roomBounds,
-        floorY: window.FISH_ZONE.floorY || this.floorY,
-        height: (window.FISH_ZONE.ceilingY || 2.5) - (window.FISH_ZONE.floorY || 0),
-        orientedBox: window.FISH_ZONE.orientedBox
-      };
-      this.createSpawnZoneBoundingBox(roomData);
-    }
-
-    console.log('✅ Visualisations recréées avec succès');
   },
 
   initializeXRSession: async function (resumeMode = false) {
@@ -587,67 +372,39 @@ AFRAME.registerComponent('room-detection', {
     this.xrSession = renderer.xr.getSession();
     this.xrRefSpace = renderer.xr.getReferenceSpace();
 
-    // ✅ Écouter les resets du reference space (se produisent quand le Quest re-localise
-    // après enlèvement/remise du casque dans la même session)
+    // Écouter les resets du reference space (casque retiré/remis)
     if (this.xrRefSpace) {
-      // Retirer l'ancien handler si existant
       if (this._refSpaceResetHandler && this._prevXrRefSpace) {
         try { this._prevXrRefSpace.removeEventListener('reset', this._refSpaceResetHandler); } catch (e) { /* ignore */ }
       }
-      this._refSpaceResetHandler = () => {
-        console.log('🔄 XRReferenceSpace reset détecté - visuels à reconstruire');
-        // Mettre à jour le reference space et lever le flag
-        const upToDateRefSpace = this.el.sceneEl.renderer.xr.getReferenceSpace();
+      this._refSpaceResetHandler = (event) => {
+        var upToDateRefSpace = this.el.sceneEl.renderer.xr.getReferenceSpace();
         if (upToDateRefSpace) this.xrRefSpace = upToDateRefSpace;
-        if (this.scanComplete) this._pendingVisualRebuild = true;
+
+        if (this.scanComplete) {
+          this._resetDeltaMatrix = event.transform
+            ? new THREE.Matrix4().fromArray(event.transform.matrix)
+            : null;
+          this._pendingVisualRebuild = true;
+        }
       };
       this._prevXrRefSpace = this.xrRefSpace;
       this.xrRefSpace.addEventListener('reset', this._refSpaceResetHandler);
     }
 
-    if (!this.xrSession) {
-      console.warn('❌ Session XR non disponible');
-      return;
-    }
+    if (!this.xrSession) return;
 
-    // Vérifier les features
-    if (this.xrSession.enabledFeatures) {
-      const features = Array.from(this.xrSession.enabledFeatures);
-      console.log('✅ Features XR activées:', features);
-
-      if (features.includes('plane-detection')) {
-        console.log('✅ Plane detection disponible !');
-      }
-      if (features.includes('mesh-detection')) {
-        console.log('✅ Mesh detection disponible !');
-      }
-      if (features.includes('hit-test')) {
-        console.log('✅ Hit-test disponible !');
-      }
-    }
-
-    // Initialiser le hit-test source (comme le professeur)
-    // On utilise le viewer space pour scanner ce qu'on regarde
+    // Hit-test source
     try {
       const viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
-      this.hitTestSource = await this.xrSession.requestHitTestSource({
-        space: viewerSpace
-      });
-      console.log('✅ Hit-test source créé (viewer space)');
+      this.hitTestSource = await this.xrSession.requestHitTestSource({ space: viewerSpace });
     } catch (error) {
-      console.warn('⚠️ Hit-test viewer non disponible:', error.message);
+      console.warn('Hit-test viewer non disponible:', error.message);
     }
 
-    // Créer un curseur visuel pour montrer où on pointe (seulement si pas en mode resume)
-    if (!resumeMode && !this.cursorEl) {
-      this.createScanCursor();
-    }
-
-    // Démarrer le scan UNIQUEMENT si pas en mode resume
+    if (!resumeMode && !this.cursorEl) this.createScanCursor();
     if (!resumeMode) {
       this.startScan();
-    } else {
-      console.log('📍 Mode resume - Scan non relancé');
     }
   },
 
@@ -685,165 +442,87 @@ AFRAME.registerComponent('room-detection', {
     this.scanStartTime = Date.now();
     this.scanPanel.setAttribute('visible', 'true');
 
-    console.log('🔍 Starting environment scan...');
-    console.log('💡 Look at tables and surfaces to detect them!');
-
-    // Programmer la fin du scan
     setTimeout(() => {
-      if (this.isScanning) {
-        this.finishScan();
-      }
+      if (this.isScanning) this.finishScan();
     }, this.data.scanDuration);
   },
 
+  _cleanupHitTest: function () {
+    if (this.hitTestSource) { this.hitTestSource.cancel(); this.hitTestSource = null; }
+    if (this.controllerHitTestSource) { this.controllerHitTestSource.cancel(); this.controllerHitTestSource = null; }
+    this.hitTestSourceRequested = false;
+    this.controllerHitTestRequested = false;
+    if (this.cursorEl) this.cursorEl.object3D.visible = false;
+  },
+
   onExitXR: function () {
-    console.log('🚪 Sortie du mode XR');
-
-    // ✅ NE PAS nettoyer si le scan est complété (pour garder la position stable)
     if (this.scanComplete) {
-      console.log('   ℹ️ Scan terminé - Conservation des données pour éviter décalage');
-      // Nettoyer juste les hit-test sources
-      if (this.hitTestSource) {
-        this.hitTestSource.cancel();
-        this.hitTestSource = null;
-      }
-      if (this.controllerHitTestSource) {
-        this.controllerHitTestSource.cancel();
-        this.controllerHitTestSource = null;
-      }
-      this.hitTestSourceRequested = false;
-      this.controllerHitTestRequested = false;
-
-      // Cacher le curseur
-      if (this.cursorEl) {
-        this.cursorEl.object3D.visible = false;
-      }
-
-      // NE PAS appeler clearPlaneVisuals() ni changer isScanning
+      this._cleanupHitTest();
       return;
     }
 
-    // Si le scan n'est pas terminé, nettoyer normalement
     this.isScanning = false;
     this.scanPanel.setAttribute('visible', 'false');
     this.clearPlaneVisuals();
-
-    // Nettoyer les hit-test sources
-    if (this.hitTestSource) {
-      this.hitTestSource.cancel();
-      this.hitTestSource = null;
-    }
-    if (this.controllerHitTestSource) {
-      this.controllerHitTestSource.cancel();
-      this.controllerHitTestSource = null;
-    }
-    this.hitTestSourceRequested = false;
-    this.controllerHitTestRequested = false;
-
-    // Cacher le curseur
-    if (this.cursorEl) {
-      this.cursorEl.object3D.visible = false;
-    }
+    this._cleanupHitTest();
   },
 
   tick: function (time, deltaTime) {
-    // ✅ Reconstruire les visuels si un reset du reference space a eu lieu
+    // Reconstruire les visuels après reset via matrice delta
     if (this._pendingVisualRebuild && this.scanComplete) {
-      const renderer = this.el.sceneEl.renderer;
-      if (renderer?.xr) {
-        const frame = renderer.xr.getFrame();
-        if (frame) {
-          this._pendingVisualRebuild = false;
-          this._rebuildVisualsAfterReset(frame);
-          return;
-        }
-      }
+      this._pendingVisualRebuild = false;
+      this._rebuildVisualsAfterReset(this._resetDeltaMatrix);
+      this._resetDeltaMatrix = null;
     }
 
-    // ✅ NE PAS continuer à détecter de nouveaux plans si le scan est déjà complété
-    // Cela évite les duplications quand l'utilisateur enlève et remet le casque
+    // Ne pas détecter de nouveaux plans si scan terminé
     if (this.scanComplete && this.data.continuousDetection) {
-      // En mode continuous, on peut continuer le hit-test pour le curseur, 
-      // mais PAS la détection de nouveaux plans
-      if (this.xrSession && this.xrRefSpace) {
-        this.performHitTest(); // Juste pour le curseur visuel
-      }
+      if (this.xrSession && this.xrRefSpace) this.performHitTest();
       return;
     }
 
-    // Continuer le scan normal si pas encore complété
-    const shouldDetect = this.isScanning;
+    if (!this.isScanning || !this.xrSession || !this.xrRefSpace) return;
 
-    if (!shouldDetect || !this.xrSession || !this.xrRefSpace) return;
+    // Barre de progression
+    var elapsed = Date.now() - this.scanStartTime;
+    var progress = Math.min(elapsed / this.data.scanDuration, 1);
+    var width = 1.1 * progress;
+    this.progressBar.setAttribute('width', Math.max(0.01, width));
+    this.progressBar.setAttribute('position', `${-0.55 + width / 2} -0.26 0.02`);
 
-    // Mettre à jour la barre de progression pendant le scan
-    if (this.isScanning) {
-      const elapsed = Date.now() - this.scanStartTime;
-      const progress = Math.min(elapsed / this.data.scanDuration, 1);
-      const width = 1.1 * progress;
-      this.progressBar.setAttribute('width', Math.max(0.01, width));
-      this.progressBar.setAttribute('position', `${-0.55 + width / 2} -0.26 0.02`);
-    }
-
-    // Détecter les plans et utiliser hit-test
     this.detectPlanes();
     this.performHitTest();
   },
 
-  // Hit-test pour détecter précisément ce qu'on regarde (comme le professeur)
   performHitTest: function () {
-    const renderer = this.el.sceneEl.renderer;
+    var renderer = this.el.sceneEl.renderer;
     if (!renderer?.xr) return;
-
-    const frame = renderer.xr.getFrame();
+    var frame = renderer.xr.getFrame();
     if (!frame) return;
 
-    // Essayer aussi de créer un hit-test source pour le contrôleur droit
-    // (comme le professeur fait dans son code)
-    if (!this.controllerHitTestSource && this.xrSession) {
-      this.trySetupControllerHitTest(frame);
-    }
-
-    // Hit-test depuis la vue (regarder les surfaces)
+    if (!this.controllerHitTestSource && this.xrSession) this.trySetupControllerHitTest(frame);
     this.processHitTestSource(frame, this.hitTestSource, 'viewer');
-
-    // Hit-test depuis le contrôleur (pointer les surfaces)
     this.processHitTestSource(frame, this.controllerHitTestSource, 'controller');
   },
 
   trySetupControllerHitTest: function (frame) {
-    // Approche du professeur : chercher le contrôleur droit dynamiquement
     if (this.controllerHitTestRequested || !this.xrSession) return;
 
     try {
-      const inputSources = this.xrSession.inputSources;
-
-      // Chercher la manette droite (comme le professeur le fait)
-      for (let inputSource of inputSources) {
+      var inputSources = this.xrSession.inputSources;
+      for (var inputSource of inputSources) {
         if (inputSource.handedness === 'right' && inputSource.targetRaySpace) {
           this.controllerHitTestRequested = true;
           this.xrSession.requestHitTestSource({ space: inputSource.targetRaySpace })
-            .then((source) => {
-              this.controllerHitTestSource = source;
-              if (this.data.debug) {
-                console.log('✅ Hit-test contrôleur droit créé - Pointez les tables !');
-              }
-            })
-            .catch((error) => {
-              if (this.data.debug) {
-                console.warn('⚠️ Hit-test contrôleur non disponible:', error.message);
-              }
-            });
+            .then((source) => { this.controllerHitTestSource = source; })
+            .catch(() => { });
           break;
         }
       }
-    } catch (error) {
-      // Silently ignore errors
-    }
+    } catch (error) { /* ignore */ }
   },
 
   processHitTestSource: function (frame, hitTestSource, sourceType) {
-    // Approche du professeur : traiter les résultats du hit-test avec filtrage intelligent
     if (!hitTestSource) return;
 
     try {
@@ -924,14 +603,6 @@ AFRAME.registerComponent('room-detection', {
             this.roomBounds.maxY = Math.max(this.roomBounds.maxY, pos.y);
             this.roomBounds.minZ = Math.min(this.roomBounds.minZ, pos.z);
             this.roomBounds.maxZ = Math.max(this.roomBounds.maxZ, pos.z);
-
-            if (this.data.debug && this.isScanning && sourceType === 'controller') {
-              const dx = pos.x - (rightController ? frame.getPose(rightController.targetRaySpace, this.xrRefSpace).transform.position.x : 0);
-              const dy = pos.y - (rightController ? frame.getPose(rightController.targetRaySpace, this.xrRefSpace).transform.position.y : 0);
-              const dz = pos.z - (rightController ? frame.getPose(rightController.targetRaySpace, this.xrRefSpace).transform.position.z : 0);
-              const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-              console.log(`🎯 Surface détectée à y=${pos.y.toFixed(2)}m (distance: ${dist.toFixed(2)}m)`);
-            }
           }
         }
       } else if (sourceType === 'viewer' && this.cursorEl) {
@@ -1005,6 +676,9 @@ AFRAME.registerComponent('room-detection', {
   },
 
   classifyPlane: function (plane, planeData) {
+    // Stocker le semanticLabel si disponible (Quest 3 Space Setup)
+    planeData.semanticLabel = plane.semanticLabel || null;
+
     // Approche du professeur : classification robuste basée sur la pose réelle
     const pose = planeData.pose;
     const matrix = new THREE.Matrix4();
@@ -1033,11 +707,10 @@ AFRAME.registerComponent('room-detection', {
       avgY = sumY / polygon.length;
     }
 
-    // Calculer taille et aire (méthode du professeur)
-    const planeWidth = maxX - minX;
-    const planeDepth = maxZ - minZ;
-    const planeArea = planeWidth * planeDepth;
-    const heightVariance = maxY - minY;  // Vérifier si c'est vraiment plat
+    var planeWidth = maxX - minX;
+    var planeDepth = maxZ - minZ;
+    var planeArea = planeWidth * planeDepth;
+    var heightVariance = maxY - minY;
 
     // Stocker les infos
     planeData.worldY = avgY;
@@ -1101,13 +774,11 @@ AFRAME.registerComponent('room-detection', {
   },
 
   updateBoundsFromPolygon: function (pose, polygon) {
-    // Utiliser la matrice de transformation pour convertir en coordonnées monde
-    const matrix = new THREE.Matrix4();
+    var matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
 
     polygon.forEach(vertex => {
-      // Transformer le vertex local en coordonnées monde
-      const worldPos = new THREE.Vector3(vertex.x, vertex.y, vertex.z);
+      var worldPos = new THREE.Vector3(vertex.x, vertex.y, vertex.z);
       worldPos.applyMatrix4(matrix);
 
       this.roomBounds.minX = Math.min(this.roomBounds.minX, worldPos.x);
@@ -1120,46 +791,23 @@ AFRAME.registerComponent('room-detection', {
   },
 
   createPlaneVisual: function (plane, planeData) {
-    const polygon = planeData.polygon;
-    const pose = planeData.pose;
+    var polygon = planeData.polygon;
+    var pose = planeData.pose;
+    if (!polygon || polygon.length < 3 || planeData._visualCreated) return;
 
-    if (!polygon || polygon.length < 3) return;
-
-    // Éviter de créer plusieurs fois la visualisation pour le même plane
-    if (planeData._visualCreated) return;
-
-    // Calculer la hauteur Y moyenne pour la classification
-    const matrix = new THREE.Matrix4();
+    var matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
-    const centerWorld = new THREE.Vector3(0, 0, 0).applyMatrix4(matrix);
+    var centerWorld = new THREE.Vector3(0, 0, 0).applyMatrix4(matrix);
+    var isTable = plane.orientation === 'horizontal' && planeData.obstacleType === 'table';
 
-    // Vérifier si c'est une table (amélioré)
-    const isTable = plane.orientation === 'horizontal' &&
-      planeData.obstacleType === 'table';
-
-    if (isTable) {
-      // Pour les tables, créer une visualisation TRÈS VISIBLE
-      this.createTableVisual(polygon, matrix, planeData);
-    } else {
-      // Pour les autres plans, utiliser la géométrie classique
-      this.createStandardPlaneVisual(polygon, matrix, planeData, plane, centerWorld);
-    }
+    if (isTable) this.createTableVisual(polygon, matrix, planeData);
+    else this.createStandardPlaneVisual(polygon, matrix, planeData, plane, centerWorld);
   },
 
-  // Créer une visualisation très visible pour les tables
   createTableVisual: function (polygon, matrix, planeData) {
-    // Créer les points du contour de la table
-    const points = [];
-    polygon.forEach(vertex => {
-      points.push(new THREE.Vector3(vertex.x, vertex.y, vertex.z));
-    });
-
-    // Créer le contour avec une line très épaisse et très colorée
-    const lineGeometry = new THREE.BufferGeometry();
-
-    // Ajouter tous les points + fermer la boucle
-    const closedPoints = [...points, points[0]];
-    lineGeometry.setFromPoints(closedPoints);
+    var points = polygon.map(v => new THREE.Vector3(v.x, v.y, v.z));
+    var lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setFromPoints([...points, points[0]]);
 
     // Matériau pour le contour (JAUNE BRILLANT pour les tables)
     const lineMaterial = new THREE.LineBasicMaterial({
@@ -1206,48 +854,21 @@ AFRAME.registerComponent('room-detection', {
     planeData._visualCreated = true;
   },
 
-  // Créer une visualisation standard pour les autres plans
   createStandardPlaneVisual: function (polygon, matrix, planeData, plane, centerWorld) {
-    // Créer un shape 2D à partir du polygone (coordonnées locales du plan)
-    const shape = new THREE.Shape();
+    var shape = new THREE.Shape();
     shape.moveTo(polygon[0].x, polygon[0].z);
-    for (let i = 1; i < polygon.length; i++) {
-      shape.lineTo(polygon[i].x, polygon[i].z);
-    }
+    for (var i = 1; i < polygon.length; i++) shape.lineTo(polygon[i].x, polygon[i].z);
     shape.closePath();
 
-    const geometry = new THREE.ShapeGeometry(shape);
+    var geometry = new THREE.ShapeGeometry(shape);
     geometry.rotateX(-Math.PI / 2);
 
-    // Couleur selon le type de plan
-    let color, opacity;
+    // Couleur selon le type
+    var color = 0x0088ff, opacity = 0.25;
     if (plane.orientation === 'horizontal') {
-      if (centerWorld.y < 0.25) {
-        color = 0x00ff00; // Sol = vert vif
-        opacity = 0.35;
-      } else if (centerWorld.y > 2.2) {
-        color = 0x00ffff; // Plafond = cyan
-        opacity = 0.2;
-      } else {
-        // Autre obstacle
-        const obstacleType = planeData.obstacleType || 'unknown';
-        if (obstacleType.includes('tabouret') || obstacleType.includes('bas')) {
-          color = 0xffff00; // Jaune pour meubles bas
-          opacity = 0.4;
-        } else if (obstacleType.includes('comptoir') || obstacleType.includes('étagère')) {
-          color = 0xff00ff; // Magenta pour comptoirs/étagères
-          opacity = 0.4;
-        } else if (obstacleType.includes('petit')) {
-          color = 0xff4444; // Rouge pour petits objets
-          opacity = 0.6;
-        } else {
-          color = 0xff8800; // Orange par défaut
-          opacity = 0.4;
-        }
-      }
-    } else {
-      color = 0x0088ff; // Mur = bleu
-      opacity = 0.25;
+      if (centerWorld.y < 0.25) { color = 0x00ff00; opacity = 0.35; }
+      else if (centerWorld.y > 2.2) { color = 0x00ffff; opacity = 0.2; }
+      else { color = 0xff8800; opacity = 0.4; }
     }
 
     const material = new THREE.MeshBasicMaterial({
@@ -1316,72 +937,158 @@ AFRAME.registerComponent('room-detection', {
     this.scanText.setAttribute('value', details);
   },
 
-  // Reconstruit tous les visuels (plans + boîte spawn) après un reset XR reference space
-  _rebuildVisualsAfterReset: function (frame) {
-    console.log('🔄 Reconstruction des visuels après reset du reference space...');
-    if (!this.xrRefSpace) return;
+  // Reconstruit visuels + bounds après un reset du reference space
+  _rebuildVisualsAfterReset: function (deltaMatrix) {
+    var delta = deltaMatrix || new THREE.Matrix4();
 
-    // 1. Supprimer les anciens visuels THREE.js
     this.clearPlaneVisuals();
-
-    // 2. Supprimer l'ancienne boîte de spawn
-    const oldBox = document.querySelector('#spawn-zone-bounds');
+    var oldBox = document.querySelector('#spawn-zone-bounds');
     if (oldBox && oldBox.parentNode) oldBox.parentNode.removeChild(oldBox);
 
-    // 3. Recréer les visuels des plans avec les nouvelles poses
-    if (this.data.showPlanes) {
-      this.detectedPlanes.forEach((planeData, plane) => {
-        try {
-          const newPose = frame.getPose(plane.planeSpace, this.xrRefSpace);
-          if (!newPose) return;
-          planeData.pose = newPose;
-          planeData._visualCreated = false;
-          this.createPlaneVisual(plane, planeData);
-        } catch (err) {
-          // planeSpace invalide (plan disparu) - ignorer
-        }
-      });
-    }
+    // Transformer les poses de tous les plans avec la matrice delta
+    this.roomBounds = {
+      minX: Infinity, maxX: -Infinity,
+      minY: Infinity, maxY: -Infinity,
+      minZ: Infinity, maxZ: -Infinity
+    };
+    this.floorY = 0;
 
-    // 4. Recréer la boîte de spawn zone en utilisant la nouvelle pose du sol
+    this.detectedPlanes.forEach(function (planeData, plane) {
+      try {
+        // Calculer la nouvelle matrice de pose : delta * oldPose
+        var oldPoseMatrix = new THREE.Matrix4().fromArray(planeData.pose.transform.matrix);
+        var newPoseMatrix = new THREE.Matrix4().multiplyMatrices(delta, oldPoseMatrix);
+
+        // Décomposer pour extraire position + orientation (utiles pour detectOpenings)
+        var newPos = new THREE.Vector3();
+        var newQuat = new THREE.Quaternion();
+        var newScale = new THREE.Vector3();
+        newPoseMatrix.decompose(newPos, newQuat, newScale);
+
+        // Créer un objet pose synthétique compatible avec le reste du code
+        planeData.pose = {
+          transform: {
+            matrix: newPoseMatrix.elements,
+            position: { x: newPos.x, y: newPos.y, z: newPos.z, w: 1 },
+            orientation: { x: newQuat.x, y: newQuat.y, z: newQuat.z, w: newQuat.w }
+          }
+        };
+        planeData._visualCreated = false;
+
+        // Recalculer bounds / worldY / dimensions depuis polygon + nouvelle pose
+        var polygon = planeData.polygon;
+        if (polygon && polygon.length > 0) {
+          var sumY = 0;
+          var minX = Infinity, maxX = -Infinity;
+          var minY = Infinity, maxY = -Infinity;
+          var minZ = Infinity, maxZ = -Infinity;
+
+          polygon.forEach(function (v) {
+            var vec = new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(newPoseMatrix);
+            sumY += vec.y;
+            if (vec.x < minX) minX = vec.x;
+            if (vec.x > maxX) maxX = vec.x;
+            if (vec.y < minY) minY = vec.y;
+            if (vec.y > maxY) maxY = vec.y;
+            if (vec.z < minZ) minZ = vec.z;
+            if (vec.z > maxZ) maxZ = vec.z;
+          });
+
+          var avgY = sumY / polygon.length;
+          planeData.worldY = avgY;
+          planeData.bounds = { minX: minX, maxX: maxX, minY: minY, maxY: maxY, minZ: minZ, maxZ: maxZ };
+          planeData.dimensions = {
+            width: maxX - minX,
+            depth: maxZ - minZ,
+            area: (maxX - minX) * (maxZ - minZ)
+          };
+
+          // Mettre à jour les bounds globaux de la pièce
+          this.roomBounds.minX = Math.min(this.roomBounds.minX, minX);
+          this.roomBounds.maxX = Math.max(this.roomBounds.maxX, maxX);
+          this.roomBounds.minY = Math.min(this.roomBounds.minY, minY);
+          this.roomBounds.maxY = Math.max(this.roomBounds.maxY, maxY);
+          this.roomBounds.minZ = Math.min(this.roomBounds.minZ, minZ);
+          this.roomBounds.maxZ = Math.max(this.roomBounds.maxZ, maxZ);
+        }
+
+        // Recalculer floorY depuis les plans de sol
+        if (plane.orientation === 'horizontal' && planeData.worldY < 0.3) {
+          this.floorY = Math.max(this.floorY, planeData.worldY);
+        }
+
+        // Recréer le visuel du plan
+        if (this.data.showPlanes) {
+          this.createPlaneVisual(plane, planeData);
+        }
+      } catch (err) { /* ignore */ }
+    }.bind(this));
+
+    // Calculer la hauteur
+    var newCeilingY = this.roomBounds.maxY;
+    var height = newCeilingY - this.floorY;
+    if (!isFinite(height) || height < 1.5) height = 2.5;
+    height = Math.min(height, 4.0);
+
+    // Recréer la boîte de spawn zone avec le plus grand sol
+    var roomData = null;
     try {
-      let largestFloorEntry = null;
-      let maxArea = 0;
-      this.floorPlanes.forEach(fp => {
-        const area = fp.data?.dimensions?.area || 0;
+      var largestFloorEntry = null;
+      var maxArea = 0;
+      this.floorPlanes.forEach(function (fp) {
+        var area = fp.data && fp.data.dimensions ? fp.data.dimensions.area : 0;
         if (area > maxArea) { maxArea = area; largestFloorEntry = fp; }
       });
 
-      if (largestFloorEntry) {
-        const newFloorPose = frame.getPose(largestFloorEntry.plane.planeSpace, this.xrRefSpace);
-        if (newFloorPose) {
-          // Mettre à jour la pose sauvegardée
-          largestFloorEntry.data.pose = newFloorPose;
-          const height = Math.max(1.5, (window.FISH_ZONE?.ceilingY || 2.5) - (window.FISH_ZONE?.floorY || this.floorY));
-          this.createSpawnZoneBoundingBox({
-            floorPolygon: largestFloorEntry.data.polygon,
-            floorPose: newFloorPose,
-            height: height,
-            floorY: window.FISH_ZONE?.floorY || this.floorY
-          });
-          console.log('✅ Boîte spawn reconstruite avec la nouvelle pose du sol');
-          return;
-        }
+      if (largestFloorEntry && largestFloorEntry.data.pose) {
+        var floorBounds = largestFloorEntry.data.bounds;
+        roomData = {
+          width: floorBounds.maxX - floorBounds.minX,
+          depth: floorBounds.maxZ - floorBounds.minZ,
+          height: height,
+          centerX: (floorBounds.minX + floorBounds.maxX) / 2,
+          centerZ: (floorBounds.minZ + floorBounds.maxZ) / 2,
+          floorY: this.floorY,
+          bounds: floorBounds,
+          floorPolygon: largestFloorEntry.data.polygon,
+          floorPose: largestFloorEntry.data.pose,
+          orientedBox: null
+        };
+        this.createSpawnZoneBoundingBox(roomData);
       }
-    } catch (err) {
-      console.warn('⚠️ Impossible de re-poser la boîte spawn via planeSpace:', err);
+    } catch (err) { /* ignore */ }
+
+    // Fallback
+    if (!roomData) {
+      roomData = {
+        bounds: this.roomBounds,
+        floorY: this.floorY,
+        height: height
+      };
+      this.createSpawnZoneBoundingBox(roomData);
     }
 
-    // Fallback : recréer la boîte avec les données sauvegardées (sans polygon)
-    if (window.FISH_ZONE?.roomBounds) {
-      this.createSpawnZoneBoundingBox({
-        bounds: window.FISH_ZONE.roomBounds,
-        floorY: window.FISH_ZONE.floorY || this.floorY,
-        height: (window.FISH_ZONE.ceilingY || 2.5) - (window.FISH_ZONE.floorY || 0)
-      });
+    this.detectOpenings();
+
+    // Mettre à jour window.FISH_ZONE
+    if (window && window.FISH_ZONE) {
+      window.FISH_ZONE.roomBounds = roomData.bounds;
+      window.FISH_ZONE.orientedBox = roomData.orientedBox || null;
+      window.FISH_ZONE.floorY = this.floorY;
+      window.FISH_ZONE.ceilingY = this.floorY + height;
+      window.FISH_ZONE.openings = this.openings;
+      window.FISH_ZONE.scanned = true;
     }
 
-    console.log('✅ Visuels reconstruits après reset');
+    // Notifier les composants dépendants
+    this.el.sceneEl.emit('zone-updated', {
+      bounds: roomData.bounds,
+      orientedBox: roomData.orientedBox || null,
+      floorY: this.floorY,
+      ceilingY: this.floorY + height,
+      height: height,
+      openings: this.openings
+    });
   },
 
   clearPlaneVisuals: function () {
@@ -1397,119 +1104,103 @@ AFRAME.registerComponent('room-detection', {
     this.openings = [];
 
     try {
-      console.log('🚪 Détection des ouvertures depuis les rectangles bleus (plans verticaux)...');
+      var centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
+      var centerZ = (this.roomBounds.minZ + this.roomBounds.maxZ) / 2;
 
-      // Si pas de murs détectés, créer des ouvertures par défaut
-      if (this.wallPlanes.length === 0) {
-        console.log('   Aucun mur détecté, création d\'ouvertures par défaut');
+      // 1) Par semanticLabel (Quest 3) ou heuristique par taille
+      var labeledOpenings = this.wallPlanes.filter(function (wp) {
+        var label = (wp.data.semanticLabel || wp.plane.semanticLabel || '').toLowerCase();
+        return label === 'door' || label === 'window' || label === 'opening';
+      });
 
-        // Utiliser les bounds de la pièce pour créer des ouvertures par défaut
-        const centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
-        const centerZ = (this.roomBounds.minZ + this.roomBounds.maxZ) / 2;
-        const doorY = this.floorY + 1.0; // Milieu de porte
-        const windowY = this.floorY + 1.8; // Milieu de fenêtre
-
-        // Créer une porte Nord
-        this.openings.push({
-          type: 'door',
-          position: { x: centerX, y: doorY, z: this.roomBounds.minZ },
-          normal: { x: 0, y: 0, z: -1 }, // Pointe vers l'extérieur (Nord -Z)
-          size: { width: 1.0, height: 2.0 },
-          wall: 'north'
+      var candidates;
+      if (labeledOpenings.length > 0) {
+        candidates = labeledOpenings;
+      } else {
+        // Seuil adaptatif : moitié de l'aire du plus grand mur
+        var maxArea = 0;
+        this.wallPlanes.forEach(function (wp) {
+          if (!wp.data || !wp.data.bounds) return;
+          var b = wp.data.bounds;
+          var w = Math.max(b.maxX - b.minX, b.maxZ - b.minZ);
+          var h = b.maxY - b.minY;
+          if (w * h > maxArea) maxArea = w * h;
         });
+        var areaThreshold = Math.max(maxArea * 0.5, 2.5);
 
-        // Créer une fenêtre Est
-        this.openings.push({
-          type: 'window',
-          position: { x: this.roomBounds.maxX, y: windowY, z: centerZ },
-          normal: { x: 1, y: 0, z: 0 }, // Pointe vers l'extérieur (Est +X)
-          size: { width: 1.2, height: 1.2 },
-          wall: 'east'
+        candidates = this.wallPlanes.filter(function (wp) {
+          if (!wp.data || !wp.data.bounds) return false;
+          var b = wp.data.bounds;
+          var a = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * (b.maxY - b.minY);
+          return a < areaThreshold;
         });
-
-        console.log(`   ✅ Créé ${this.openings.length} ouvertures par défaut`);
-        return;
       }
 
-      // NOUVELLE MÉTHODE: Utiliser directement les plans verticaux détectés (rectangles bleus) comme ouvertures
-      console.log(`   📐 Analyse de ${this.wallPlanes.length} plans verticaux (rectangles bleus)...`);
-
-      const centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
-      const centerZ = (this.roomBounds.minZ + this.roomBounds.maxZ) / 2;
-
-      this.wallPlanes.forEach(({ data }, index) => {
+      // 2) Créer les openings
+      var self = this;
+      candidates.forEach(function (wp) {
         try {
-          if (!data || !data.pose || !data.bounds) {
-            console.warn(`   ⚠ Plan ${index}: données manquantes`);
-            return;
-          }
+          var plane = wp.plane, data = wp.data;
+          if (!data || !data.pose || !data.bounds) return;
 
-          const pos = data.pose.transform.position;
-          const bounds = data.bounds;
+          var pos = data.pose.transform.position;
+          var bounds = data.bounds;
+          var width = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+          var height = bounds.maxY - bounds.minY;
 
-          // Calculer dimensions du plan
-          const width = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
-          const height = bounds.maxY - bounds.minY;
-          const area = width * height;
-
-          console.log(`   🔷 Plan ${index}: pos=(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}), size=${width.toFixed(2)}x${height.toFixed(2)}m (${area.toFixed(2)}m²)`);
-
-          // Déterminer l'orientation et la normale (vers l'extérieur de la pièce)
-          const toCenter = { x: centerX - pos.x, z: centerZ - pos.z };
-          let normal = { x: 0, y: 0, z: 0 };
-          let wallName = '';
+          var toCenter = { x: centerX - pos.x, z: centerZ - pos.z };
+          var normal = { x: 0, y: 0, z: 0 };
+          var wallName = '';
 
           if (Math.abs(toCenter.z) > Math.abs(toCenter.x)) {
-            // Mur Nord ou Sud
-            if (pos.z < centerZ) {
-              normal = { x: 0, y: 0, z: -1 }; // Nord: pointe vers -Z (extérieur)
-              wallName = 'north';
-            } else {
-              normal = { x: 0, y: 0, z: 1 }; // Sud: pointe vers +Z (extérieur)
-              wallName = 'south';
-            }
+            if (pos.z < centerZ) { normal = { x: 0, y: 0, z: -1 }; wallName = 'north'; }
+            else { normal = { x: 0, y: 0, z: 1 }; wallName = 'south'; }
           } else {
-            // Mur Est ou Ouest
-            if (pos.x < centerX) {
-              normal = { x: -1, y: 0, z: 0 }; // Ouest: pointe vers -X (extérieur)
-              wallName = 'west';
-            } else {
-              normal = { x: 1, y: 0, z: 0 }; // Est: pointe vers +X (extérieur)
-              wallName = 'east';
-            }
+            if (pos.x < centerX) { normal = { x: -1, y: 0, z: 0 }; wallName = 'west'; }
+            else { normal = { x: 1, y: 0, z: 0 }; wallName = 'east'; }
           }
 
-          // Créer une ouverture depuis ce plan vertical
-          const opening = {
-            type: height > 1.8 ? 'door' : 'window',
-            position: {
-              x: pos.x,
-              y: pos.y,
-              z: pos.z
-            },
+          var label = (data.semanticLabel || plane.semanticLabel || '').toLowerCase();
+          var type = (label === 'door') ? 'door' : (label === 'window') ? 'window' : (height > 1.8 ? 'door' : 'window');
+
+          self.openings.push({
+            type: type,
+            position: { x: pos.x, y: pos.y, z: pos.z },
             normal: normal,
             size: { width: width, height: height },
             wall: wallName,
-            area: area
-          };
-
-          this.openings.push(opening);
-          console.log(`      ✅ Ouverture créée: ${opening.type} sur mur ${wallName}, normale=(${normal.x}, ${normal.y}, ${normal.z})`);
-        } catch (err) {
-          console.error(`   ❌ Erreur sur plan ${index}:`, err);
-        }
+            area: width * height
+          });
+        } catch (err) { /* ignore */ }
       });
 
-      console.log(`   ✅ Total: ${this.openings.length} ouvertures détectées depuis les rectangles bleus`);
-    } catch (err) {
-      console.error('❌ ERREUR dans detectOpenings:', err);
-      // En cas d'erreur, créer au moins une ouverture par défaut pour ne pas bloquer
+      // Fallback : ouvertures par défaut
       if (this.openings.length === 0) {
-        const centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
-        const doorY = this.floorY + 1.0;
+        var doorY = this.floorY + 1.0;
+        var windowY = this.floorY + 1.8;
+
         this.openings.push({
           type: 'door',
           position: { x: centerX, y: doorY, z: this.roomBounds.minZ },
+          normal: { x: 0, y: 0, z: -1 },
+          size: { width: 1.0, height: 2.0 },
+          wall: 'north'
+        });
+        this.openings.push({
+          type: 'window',
+          position: { x: this.roomBounds.maxX, y: windowY, z: centerZ },
+          normal: { x: 1, y: 0, z: 0 },
+          size: { width: 1.2, height: 1.2 },
+          wall: 'east'
+        });
+      }
+    } catch (err) {
+      console.error('detectOpenings error:', err);
+      if (this.openings.length === 0) {
+        var cx = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
+        this.openings.push({
+          type: 'door',
+          position: { x: cx, y: this.floorY + 1.0, z: this.roomBounds.minZ },
           normal: { x: 0, y: 0, z: -1 },
           size: { width: 1.0, height: 2.0 },
           wall: 'north'
@@ -1522,28 +1213,8 @@ AFRAME.registerComponent('room-detection', {
     this.isScanning = false;
     this.scanComplete = true;
 
-    const totalPlanes = this.detectedPlanes.size;
-
-    // Logs détaillés comme le professeur
-    console.log(`\n✅ SCAN COMPLETE - ${totalPlanes} surfaces analyzed`);
-    console.log(`   🟢 Sols: ${this.floorPlanes.length}`);
-    console.log(`   🔷 Murs: ${this.wallPlanes.length}`);
-    console.log(`   🟠 Obstacles (tables, meubles): ${this.obstaclePlanes.length}`);
-    console.log(`   🔵 Plafonds: ${this.ceilingPlanes.length}`);
-    console.log(`   Total surfaces détectées par hit-test: ${this.hitSurfaces.size}\n`);
-
-    // Détail des obstacles
-    if (this.obstaclePlanes.length > 0) {
-      const typeCount = {};
-      this.obstaclePlanes.forEach(({ data }) => {
-        const type = data.obstacleType || 'autre';
-        typeCount[type] = (typeCount[type] || 0) + 1;
-      });
-      console.log('   Détail des obstacles détectés:');
-      Object.entries(typeCount).forEach(([type, count]) => {
-        console.log(`     - ${count} ${type}(s)`);
-      });
-    }
+    var totalPlanes = this.detectedPlanes.size;
+    console.log('Scan complete:', totalPlanes, 'surfaces');
 
     // Mettre à jour l'UI
     this.scanTitle.setAttribute('value', '✅ SCAN COMPLETE');
@@ -1551,43 +1222,30 @@ AFRAME.registerComponent('room-detection', {
     this.scanText.setAttribute('value', `${totalPlanes} surfaces\nAdapting water...`);
     this.progressBar.setAttribute('color', '#00ff00');
 
-    // CALCUL AMÉLIORÉ : Utiliser le sol le plus grand pour définir la zone
-    let roomData = null;
+    var roomData = null;
 
     if (this.floorPlanes.length > 0) {
-      // Trouver le plus grand sol
-      let largestFloor = this.floorPlanes[0];
-      let maxArea = 0;
+      var largestFloor = this.floorPlanes[0];
+      var maxArea = 0;
 
-      this.floorPlanes.forEach(({ data }) => {
-        const area = data.dimensions?.area || 0;
+      this.floorPlanes.forEach(function (fp) {
+        var area = fp.data.dimensions ? fp.data.dimensions.area || 0 : 0;
         if (area > maxArea) {
           maxArea = area;
-          largestFloor = { data };
+          largestFloor = fp;
         }
       });
 
-      const floorData = largestFloor.data;
-      const floorBounds = floorData.bounds;
+      var floorData = largestFloor.data;
+      var floorBounds = floorData.bounds;
+      var width = floorBounds.maxX - floorBounds.minX;
+      var depth = floorBounds.maxZ - floorBounds.minZ;
+      var centerX = (floorBounds.minX + floorBounds.maxX) / 2;
+      var centerZ = (floorBounds.minZ + floorBounds.maxZ) / 2;
 
-      // Utiliser les dimensions réelles du sol principal
-      const width = floorBounds.maxX - floorBounds.minX;
-      const depth = floorBounds.maxZ - floorBounds.minZ;
-      const centerX = (floorBounds.minX + floorBounds.maxX) / 2;
-      const centerZ = (floorBounds.minZ + floorBounds.maxZ) / 2;
-
-      // Hauteur basée sur les murs ou valeur par défaut
-      let height = this.roomBounds.maxY - this.floorY;
+      var height = this.roomBounds.maxY - this.floorY;
       if (!isFinite(height) || height < 1.5) height = 2.5;
-      height = Math.min(height, 4.0); // Limiter à 4m max
-
-      console.log('📐 Dimensions basées sur le sol principal:');
-      console.log(`   - Aire du sol: ${maxArea.toFixed(2)}m²`);
-      console.log(`   - Largeur: ${width.toFixed(2)}m`);
-      console.log(`   - Profondeur: ${depth.toFixed(2)}m`);
-      console.log(`   - Hauteur: ${height.toFixed(2)}m`);
-      console.log(`   - Centre: (${centerX.toFixed(2)}, ${centerZ.toFixed(2)})`);
-      console.log(`   - Sol Y: ${this.floorY.toFixed(2)}m\n`);
+      height = Math.min(height, 4.0);
 
       roomData = {
         width: width,
@@ -1599,55 +1257,34 @@ AFRAME.registerComponent('room-detection', {
         bounds: floorBounds,
         floorPolygon: floorData.polygon,
         floorPose: floorData.pose,
-        orientedBox: null // Sera rempli par createBoxFromPolygon
+        orientedBox: null
       };
     } else {
-      // Fallback : utiliser les bounds globaux
-      const bounds = this.roomBounds;
-      let width = bounds.maxX - bounds.minX;
-      let depth = bounds.maxZ - bounds.minZ;
-      let height = bounds.maxY - bounds.minY;
+      var bounds = this.roomBounds;
+      var width = bounds.maxX - bounds.minX;
+      var depth = bounds.maxZ - bounds.minZ;
+      var height = bounds.maxY - bounds.minY;
 
       if (!isFinite(width) || width < 1) width = 6;
       if (!isFinite(depth) || depth < 1) depth = 6;
       if (!isFinite(height) || height < 1) height = 2.5;
-
       width = Math.min(Math.max(width, 2), 20);
       depth = Math.min(Math.max(depth, 2), 20);
       height = Math.min(Math.max(height, 1.5), 5);
 
-      const centerX = isFinite(bounds.minX) && isFinite(bounds.maxX)
-        ? (bounds.minX + bounds.maxX) / 2 : 0;
-      const centerZ = isFinite(bounds.minZ) && isFinite(bounds.maxZ)
-        ? (bounds.minZ + bounds.maxZ) / 2 : -2;
-
-      console.log('📐 Dimensions (fallback - bounds globaux):');
-      console.log(`   - Largeur: ${width.toFixed(2)}m`);
-      console.log(`   - Profondeur: ${depth.toFixed(2)}m`);
-      console.log(`   - Hauteur: ${height.toFixed(2)}m`);
-      console.log(`   - Centre: (${centerX.toFixed(2)}, ${centerZ.toFixed(2)})\n`);
+      var centerX = isFinite(bounds.minX) && isFinite(bounds.maxX) ? (bounds.minX + bounds.maxX) / 2 : 0;
+      var centerZ = isFinite(bounds.minZ) && isFinite(bounds.maxZ) ? (bounds.minZ + bounds.maxZ) / 2 : -2;
 
       roomData = {
-        width: width,
-        depth: depth,
-        height: height,
-        centerX: centerX,
-        centerZ: centerZ,
-        floorY: this.floorY,
-        bounds: bounds
+        width: width, depth: depth, height: height,
+        centerX: centerX, centerZ: centerZ,
+        floorY: this.floorY, bounds: bounds
       };
     }
 
-    // Créer une boîte de visualisation pour la zone de spawn
-    // IMPORTANT: createBoxFromPolygon modifie data.bounds et data.orientedBox
     this.createSpawnZoneBoundingBox(roomData);
-
-    // Détecter les ouvertures (portes et fenêtres)
     this.detectOpenings();
 
-    console.log('📤 Émission room-scanned avec orientedBox:', roomData.orientedBox ? 'OUI ✅' : 'NON ❌');
-
-    // Mettre à jour la variable globale pour que d'autres composants y accèdent immédiatement
     if (window && window.FISH_ZONE) {
       window.FISH_ZONE.roomBounds = roomData.bounds;
       window.FISH_ZONE.orientedBox = roomData.orientedBox || null;
@@ -1657,7 +1294,6 @@ AFRAME.registerComponent('room-detection', {
       window.FISH_ZONE.scanned = true;
     }
 
-    // Émettre l'événement avec les données (INCLURE orientedBox!)
     this.el.sceneEl.emit('room-scanned', {
       bounds: roomData.bounds,
       width: roomData.width,
@@ -1675,44 +1311,28 @@ AFRAME.registerComponent('room-detection', {
       openings: this.openings
     });
 
-    // Cacher l'UI après 3s; ne pas effacer les visualisations si debug=true
-    setTimeout(() => {
-      this.scanPanel.setAttribute('visible', 'false');
-
-      if (!this.data.debug) {
-        // En mode non-debug, on laisse l'effet se dissiper après 2s
-        setTimeout(() => {
-          this.fadeOutPlaneVisuals();
-        }, 2000);
-      } else {
-        // En debug mode, garder les visuals visibles pour inspection
-        console.log('🔍 Debug mode actif — conservation des visualisations de scan');
+    var self = this;
+    setTimeout(function () {
+      self.scanPanel.setAttribute('visible', 'false');
+      if (!self.data.debug) {
+        setTimeout(function () { self.fadeOutPlaneVisuals(); }, 2000);
       }
     }, 3000);
   },
 
   fadeOutPlaneVisuals: function () {
-    const fadeTime = 1500;
-    const startTime = Date.now();
-
-    const fade = () => {
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min(elapsed / fadeTime, 1);
-      const opacity = 1 - progress;
-
-      this.planeMeshes.forEach(mesh => {
-        if (mesh.material) {
-          mesh.material.opacity = mesh.material.opacity * opacity;
-        }
+    var fadeTime = 1500;
+    var startTime = Date.now();
+    var self = this;
+    function fade() {
+      var progress = Math.min((Date.now() - startTime) / fadeTime, 1);
+      var opacity = 1 - progress;
+      self.planeMeshes.forEach(function (mesh) {
+        if (mesh.material) mesh.material.opacity *= opacity;
       });
-
-      if (progress < 1) {
-        requestAnimationFrame(fade);
-      } else {
-        this.clearPlaneVisuals();
-      }
-    };
-
+      if (progress < 1) requestAnimationFrame(fade);
+      else self.clearPlaneVisuals();
+    }
     fade();
   },
 

@@ -52,10 +52,7 @@ canvas {
 	justify-content: center;
 	align-items: center;
 	padding: 20px;
-	animation: fadeIn 0.5s ease-in;
 }
-
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .end-game-container { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 3px solid #FFD700; border-radius: 15px; padding: 30px; max-width: 90%; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 0 30px rgba(255, 215, 0, 0.5); }
 .end-game-header { text-align: center; margin-bottom: 30px; color: #FFD700; }
@@ -67,30 +64,24 @@ canvas {
 #score-table thead { background: rgba(255,215,0,0.2); color: #FFD700; font-weight: bold; }
 #score-table th { padding: 15px; text-align: left; border-bottom: 2px solid #FFD700; font-size: 1em; }
 #score-table td { padding: 12px 15px; color: #ffffff; border-bottom: 1px solid rgba(255, 215, 0, 0.2); }
-#score-table tbody tr:hover { background: rgba(255, 215, 0, 0.1); transition: background 0.3s ease; }
+#score-table tbody tr:hover { background: rgba(255, 215, 0, 0.1); }
 #score-table tbody tr.correct-row { background: rgba(0,255,0,0.15); color: #00ff00; }
 #score-table tbody tr.incorrect-row { background: rgba(255,0,0,0.15); color: #ff6b6b; }
 #score-table tbody tr.total-row { background: rgba(255,215,0,0.2); color: #FFD700; font-size: 1.1em; border-top: 2px solid #FFD700; border-bottom: 2px solid #FFD700; font-weight: bold; }
 .end-game-buttons { display:flex; gap:15px; justify-content:center; flex-wrap:wrap; }
-.btn-end { padding: 12px 30px; font-size: 1.1em; border: 2px solid #FFD700; border-radius: 8px; cursor: pointer; font-weight: bold; transition: all 0.3s ease; min-width:150px; }
+.btn-end { padding: 12px 30px; font-size: 1.1em; border: 2px solid #FFD700; border-radius: 8px; cursor: pointer; font-weight: bold; min-width:150px; }
 .btn-restart { background: #FFD700; color: #000; }
 .btn-quit { background: transparent; color: #FFD700; }
 
 .btn-restart:hover {
 	background: #FFC700;
-	transform: scale(1.05);
-	box-shadow: 0 0 15px rgba(255, 215, 0, 0.7);
 }
 
 .btn-quit:hover {
 	background: rgba(255, 215, 0, 0.2);
-	transform: scale(1.05);
 }
 
-/* Timer warning pulse for low time */
-#timer-display.warning {
-	animation: pulse 0.5s infinite;
-}
+/* Timer warning pulse géré par GSAP (GameAnimations.startPulse / stopPulse) */
 
 /* Timer display */
 #timer-display { position: fixed; top: 20px; right: 20px; font-size: 2em; color: #FFD700; font-weight: bold; background: rgba(0,0,0,0.7); padding: 15px 25px; border-radius: 10px; border: 2px solid #FFD700; z-index: 1000; font-family: 'Courier New', monospace; text-shadow: 0 0 10px rgba(255,215,0,0.7); }
