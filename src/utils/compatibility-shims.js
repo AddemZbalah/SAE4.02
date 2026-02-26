@@ -1,12 +1,6 @@
-// ============================================
-// SHIMS DE COMPATIBILITÉ POUR THREE.JS ET CANNON.JS
-// Ces patches corrigent les incompatibilités entre versions
-// ============================================
+// Shims de compatibilité pour THREE.js et CANNON.js
 
-// ============================================
-// SHIM 1: THREE.Geometry
-// Recrée THREE.Geometry pour les anciens addons qui en dépendent
-// ============================================
+// SHIM 1: THREE.Geometry — recrée pour les anciens addons
 (function () {
   try {
     if (window.AFRAME && AFRAME.THREE && !AFRAME.THREE.Geometry) {
@@ -43,29 +37,24 @@
         }
       }
       THREE.Geometry = Geometry;
-      console.log('🔧 THREE.Geometry shim installed (class)');
     }
   } catch (e) {
     console.warn('Geometry shim failed', e);
   }
 })();
 
-// ============================================
-// SHIM 2: Box3.getCenter
-// Assure qu'un Vector3 est créé si la cible est manquante
-// ============================================
+// SHIM 2: Box3.getCenter — crée un Vector3 si la cible est manquante
 (function () {
   try {
     if (window.AFRAME && AFRAME.THREE && AFRAME.THREE.Box3) {
       const THREE = AFRAME.THREE;
       const proto = THREE.Box3.prototype;
       if (proto && typeof proto.getCenter === 'function') {
-        const origGetCenter = proto.getCenter;
+        var origGetCenter = proto.getCenter;
         proto.getCenter = function (target) {
           if (target === undefined || target === null) target = new THREE.Vector3();
           return origGetCenter.call(this, target);
         };
-        console.log('🔧 Box3.getCenter shim applied');
       }
     }
   } catch (e) {
@@ -73,20 +62,15 @@
   }
 })();
 
-// ============================================
-// SHIM 3: Quaternion.inverse()
-// Fournit la méthode inverse() pour THREE et CANNON Quaternion
-// Attend que CANNON soit chargé
-// ============================================
-window.addEventListener('load', function() {
-  setTimeout(function() {
+// SHIM 3: Quaternion.inverse() pour THREE et CANNON
+window.addEventListener('load', function () {
+  setTimeout(function () {
     try {
       // THREE.Quaternion: alias inverse -> invert()
       if (window.AFRAME && AFRAME.THREE && AFRAME.THREE.Quaternion) {
-        const Q = AFRAME.THREE.Quaternion.prototype;
+        var Q = AFRAME.THREE.Quaternion.prototype;
         if (!Q.inverse) {
           Q.inverse = Q.invert || function () { return this.conjugate(); };
-          console.log('🔧 THREE.Quaternion.inverse shim applied');
         }
       }
 
@@ -96,10 +80,7 @@ window.addEventListener('load', function() {
           CANNON.Quaternion.prototype.inverse = function () {
             return new CANNON.Quaternion(-this.x, -this.y, -this.z, this.w);
           };
-          console.log('🔧 CANNON.Quaternion.inverse shim applied');
         }
-      } else {
-        console.warn('⚠️ CANNON not loaded');
       }
     } catch (e) {
       console.warn('Quaternion shim failed', e);
@@ -107,23 +88,15 @@ window.addEventListener('load', function() {
   }, 100);
 });
 
-// CLEANUP: Supprimer d'éventuels éléments résiduels laissés par une session précédente
-window.addEventListener('load', function() {
-  setTimeout(function() {
+// Nettoyage au chargement : supprimer les éléments résiduels d’une session précédente
+window.addEventListener('load', function () {
+  setTimeout(function () {
     try {
-      // Supprimer les visualisations de zone (spawn-zone-bounds)
-      const oldBoxes = document.querySelectorAll('#spawn-zone-bounds');
-      oldBoxes.forEach(el => el.parentNode && el.parentNode.removeChild(el));
+      document.querySelectorAll('#spawn-zone-bounds').forEach(function (el) { if (el.parentNode) el.parentNode.removeChild(el); });
+      document.querySelectorAll('.fish').forEach(function (f) { if (f.parentNode) f.parentNode.removeChild(f); });
+      document.querySelectorAll('#bubbles, .bubble').forEach(function (b) { if (b.parentNode) b.parentNode.removeChild(b); });
 
-      // Supprimer les poissons résiduels
-      const oldFishes = document.querySelectorAll('.fish');
-      oldFishes.forEach(f => f.parentNode && f.parentNode.removeChild(f));
-
-      // Supprimer d'anciennes bulles statiques ou dynamiques
-      const oldBubbles = document.querySelectorAll('#bubbles, .bubble');
-      oldBubbles.forEach(b => b.parentNode && b.parentNode.removeChild(b));
-
-      // Réinitialiser la variable globale si présente
+      // Réinitialiser FISH_ZONE
       if (window && window.FISH_ZONE) {
         window.FISH_ZONE.roomBounds = null;
         window.FISH_ZONE.orientedBox = null;
@@ -133,8 +106,6 @@ window.addEventListener('load', function() {
         window.FISH_ZONE.obstacles = [];
         window.FISH_ZONE.wallPlanes = [];
       }
-
-      console.log('🧹 Cleanup on load: old spawns/fish removed, FISH_ZONE reset');
     } catch (e) {
       console.warn('Cleanup failed', e);
     }

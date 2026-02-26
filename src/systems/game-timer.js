@@ -1,179 +1,335 @@
-// Système de chronomètre et gestion de la fin de jeu (adapté depuis la branche score-challenge)
+// Timer, score et écrans de fin
 (function () {
-  let gameActive = false;
-  let timeRemaining = 60; // seconds
-  let caughtFishes = [];
-  let totalScore = 0;
-  let timerInterval = null;
+  var gameActive = false;
+  var timeRemaining = 60;
+  var caughtFishes = [];
+  var totalScore = 0;
+  var timerInterval = null;
 
   function formatTime(sec) {
-    const minutes = Math.floor(sec / 60);
-    const seconds = sec % 60;
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    var minutes = Math.floor(sec / 60);
+    var seconds = sec % 60;
+    return minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+  }
+
+  function groupCaughtFishes() {
+    var config = window.GAME_CONFIG || {};
+    var displayNames = config.FISH_DISPLAY_NAMES || {};
+    var groups = {};
+    var calcTotal = 0;
+
+    caughtFishes.forEach(function (f) {
+      var key = f.type + '_' + (f.isCorrect ? 'correct' : 'incorrect');
+      if (!groups[key]) {
+        var name = displayNames[f.type] || ('🐟 ' + f.type);
+        groups[key] = {
+          name: name + (f.isCorrect ? ' ✅' : ' ❌'),
+          count: 0,
+          points: 0,
+          isCorrect: f.isCorrect
+        };
+      }
+      groups[key].count++;
+      groups[key].points += f.points;
+      calcTotal += f.points;
+    });
+
+    totalScore = calcTotal;
+    return { groups: groups, totalScore: calcTotal };
   }
 
   window.gameTimer = {
-    startGame: function (duration = 60) {
+
+    startGame: function (duration) {
+      var config = window.GAME_CONFIG || {};
+      duration = duration || config.GAME_DURATION || 60;
+
       gameActive = true;
       timeRemaining = duration;
       caughtFishes = [];
       totalScore = 0;
 
-      // show HTML timer
-      const timerDisplay = document.getElementById('timer-display');
+      // Afficher le timer HTML
+      var timerDisplay = document.getElementById('timer-display');
       if (timerDisplay) timerDisplay.style.display = 'block';
-
-      // show 3D timer
-      const timer3D = document.querySelector('#timer-3d');
+      var timer3D = document.querySelector('#timer-3d');
       if (timer3D) timer3D.setAttribute('visible', 'true');
 
-      // show bonus panel
-      const bonusFish = document.querySelector('#bonus-fish');
+      var bonusFish = document.querySelector('#bonus-fish');
       if (bonusFish) bonusFish.setAttribute('visible', 'true');
 
-      // show score display in VR
-      const scoreDisplay = document.querySelector('#score-display');
-      if (scoreDisplay) scoreDisplay.setAttribute('visible', 'true');
-      // initialize score display value
-      if (scoreDisplay) scoreDisplay.setAttribute('value', 'Fish: 0 | Points: 0');
-
-      // show water and bubbles if present
-      const waterSurface = document.querySelector('#water-surface');
+      var scoreDisplay = document.querySelector('#score-display');
+      if (scoreDisplay) {
+        scoreDisplay.setAttribute('visible', 'true');
+        scoreDisplay.setAttribute('value', 'Fish: 0 | Points: 0');
+      }
+      var waterSurface = document.querySelector('#water-surface');
       if (waterSurface) {
         waterSurface.setAttribute('visible', 'true');
-        const animation = waterSurface.components && waterSurface.components.animation;
-        if (animation && animation.beginAnimation) animation.beginAnimation();
       }
-      const bubbles = document.querySelector('#bubbles');
+      var bubbles = document.querySelector('#bubbles');
       if (bubbles) bubbles.setAttribute('visible', 'true');
 
-      // show spear
-      const spear = document.querySelector('#spear');
+      var spear = document.querySelector('#spear');
       if (spear) spear.setAttribute('visible', 'true');
 
-      // show all fish-target entities
-      const fishTargets = document.querySelectorAll('.fish-target');
-      fishTargets.forEach(f => f.setAttribute('visible', 'true'));
+      var fishTargets = document.querySelectorAll('.fish-target');
+      fishTargets.forEach(function (f) { f.setAttribute('visible', 'true'); });
 
-      // update displays and start tick
       this.updateTimerDisplay();
-      timerInterval = setInterval(() => {
+      var self = this;
+      timerInterval = setInterval(function () {
         timeRemaining--;
-        this.updateTimerDisplay();
-        if (timeRemaining <= 0) this.endGame();
+        self.updateTimerDisplay();
+        if (timeRemaining <= 0) self.endGame();
       }, 1000);
-
-      console.log('🎮 Game started! Duration:', duration, 'seconds');
     },
 
     updateTimerDisplay: function () {
-      const t = formatTime(timeRemaining);
-      const timerDisplay = document.getElementById('timer-display');
+      var t = formatTime(timeRemaining);
+      var isWarning = timeRemaining <= 15;
+
+      // Timer HTML
+      var timerDisplay = document.getElementById('timer-display');
       if (timerDisplay) {
         timerDisplay.textContent = t;
-        // Change to red when <= 15 seconds
-        timerDisplay.style.color = timeRemaining <= 15 ? '#e74c3c' : '#FFD700';
-        // Toggle warning class to enable pulse animation
-        if (timeRemaining <= 15) timerDisplay.classList.add('warning'); else timerDisplay.classList.remove('warning');
+        timerDisplay.style.color = isWarning ? '#e74c3c' : '#FFD700';
+        if (isWarning && !timerDisplay._pulsing && window.GameAnimations) {
+          timerDisplay._pulsing = true;
+          GameAnimations.startPulse(timerDisplay);
+        } else if (!isWarning && timerDisplay._pulsing && window.GameAnimations) {
+          timerDisplay._pulsing = false;
+          GameAnimations.stopPulse(timerDisplay);
+        }
       }
-      const timerText3D = document.querySelector('#timer-text');
+
+      // Timer 3D
+      var timerText3D = document.querySelector('#timer-text');
       if (timerText3D) {
         timerText3D.setAttribute('value', t);
-        // also change 3D text color when <= 15s
-        try { timerText3D.setAttribute('color', timeRemaining <= 15 ? '#e74c3c' : '#FFD700'); } catch (e) {}
+        try { timerText3D.setAttribute('color', isWarning ? '#e74c3c' : '#FFD700'); } catch (e) { /* ignore */ }
       }
     },
 
     addCaughtFish: function (fishType, isCorrect, points) {
-      caughtFishes.push({ type: fishType, isCorrect: isCorrect, points: points, timestamp: new Date().toLocaleTimeString() });
+      caughtFishes.push({
+        type: fishType,
+        isCorrect: isCorrect,
+        points: points,
+        timestamp: new Date().toLocaleTimeString()
+      });
       totalScore += points;
 
-      // Update HUD (both HTML overlay and 3D text) when a fish is caught
+      // Mettre à jour le score
       try {
-        const scoreDisplay = document.querySelector('#score-display');
+        var scoreDisplay = document.querySelector('#score-display');
         if (scoreDisplay) {
-          const count = caughtFishes.length;
-          scoreDisplay.setAttribute('value', `Fish: ${count} | Points: ${totalScore}`);
+          scoreDisplay.setAttribute('value', 'Fish: ' + caughtFishes.length + ' | Points: ' + totalScore);
         }
-        const scoreDisplayHTML = document.getElementById('timer-display'); // reuse timer overlay for now
-        if (scoreDisplayHTML) {
-          // keep timer display separate; no change
-        }
-      } catch (e) { /* ignore HUD update errors */ }
-
-      console.log(`🐟 Fish added: ${fishType} (${isCorrect ? 'CORRECT' : 'INCORRECT'}) ${points >= 0 ? '+' : ''}${points}pts - Total: ${totalScore}`);
+      } catch (e) { /* ignore */ }
     },
 
     endGame: function () {
       gameActive = false;
       if (timerInterval) clearInterval(timerInterval);
-      console.log('🏁 Game ended!');
       this.showEndGameScreen();
     },
 
     showEndGameScreen: function () {
-      // hide timers and bonus
-      const timer3D = document.querySelector('#timer-3d'); if (timer3D) timer3D.setAttribute('visible', 'false');
-      const bonusFish = document.querySelector('#bonus-fish'); if (bonusFish) bonusFish.setAttribute('visible', 'false');
-      const scoreDisplay = document.querySelector('#score-display'); if (scoreDisplay) scoreDisplay.setAttribute('visible', 'false');
+      // Cacher les éléments de jeu
+      var timer3D = document.querySelector('#timer-3d');
+      if (timer3D) timer3D.setAttribute('visible', 'false');
+      var bonusFish = document.querySelector('#bonus-fish');
+      if (bonusFish) bonusFish.setAttribute('visible', 'false');
+      var scoreDisplay = document.querySelector('#score-display');
+      if (scoreDisplay) scoreDisplay.setAttribute('visible', 'false');
 
-      // show 3D end screen
-      const endScreen3D = document.querySelector('#end-screen-3d'); if (endScreen3D) { endScreen3D.setAttribute('visible','true'); this.populateScoreTable3D(); }
+      // Afficher l'écran de fin 3D
+      var endScreen3D = document.querySelector('#end-screen-3d');
+      if (endScreen3D) {
+        endScreen3D.setAttribute('visible', 'true');
+        this._populateScoreTable3D();
+      }
 
-      // show HTML end screen
-      const endGameScreen = document.getElementById('end-game-screen'); if (endGameScreen) { this.populateScoreTable(); endGameScreen.style.display = 'flex'; }
+      // Afficher l'écran de fin HTML
+      var endGameScreen = document.getElementById('end-game-screen');
+      if (endGameScreen) {
+        this._populateScoreTableHTML();
+        endGameScreen.style.display = 'flex';
+        // Fade in GSAP
+        if (window.GameAnimations) GameAnimations.fadeIn(endGameScreen, 500);
+      }
     },
 
-    populateScoreTable: function () {
-      const tableBody = document.getElementById('score-table-body'); if (!tableBody) return;
+    // Tableau HTML (overlay navigateur)
+    _populateScoreTableHTML: function () {
+      var tableBody = document.getElementById('score-table-body');
+      if (!tableBody) return;
       tableBody.innerHTML = '';
+
       if (caughtFishes.length === 0) {
-        const r = document.createElement('tr'); r.innerHTML = `<td colspan="3" style="text-align:center;color:#999;">😢 No fish caught...</td>`; tableBody.appendChild(r); return;
+        var emptyRow = document.createElement('tr');
+        emptyRow.innerHTML = '<td colspan="3" style="text-align:center;color:#999;">😢 No fish caught...</td>';
+        tableBody.appendChild(emptyRow);
+        return;
       }
-      const groups = {};
-      let calcTotal = 0;
-      caughtFishes.forEach(f => {
-        const key = `${f.type}_${f.isCorrect ? 'correct' : 'incorrect'}`;
-        if (!groups[key]) groups[key] = { name: (f.type === 'piranha' ? '🐠 Piranha' : '🐟 Fish') + (f.isCorrect ? ' ✅' : ' ❌'), count: 0, points: 0, isCorrect: f.isCorrect };
-        groups[key].count++; groups[key].points += f.points; calcTotal += f.points;
+
+      var result = groupCaughtFishes();
+      var groups = result.groups;
+
+      Object.values(groups).forEach(function (g) {
+        var row = document.createElement('tr');
+        row.className = g.isCorrect ? 'correct-row' : 'incorrect-row';
+        var pointsColor = g.points >= 0 ? '#00ff00' : '#ff0000';
+        var sign = g.points > 0 ? '+' : '';
+        row.innerHTML = '<td>' + g.name + '</td>' +
+          '<td>x ' + g.count + '</td>' +
+          '<td style="color:' + pointsColor + '">' + sign + g.points + ' pts</td>';
+        tableBody.appendChild(row);
       });
-      totalScore = calcTotal;
-      Object.values(groups).forEach(g => {
-        const row = document.createElement('tr'); row.className = g.isCorrect ? 'correct-row' : 'incorrect-row'; const pointsColor = g.points >= 0 ? '#00ff00' : '#ff0000'; row.innerHTML = `<td>${g.name}</td><td>x ${g.count}</td><td style="color:${pointsColor}">${g.points > 0 ? '+' : ''}${g.points} pts</td>`; tableBody.appendChild(row);
-      });
-      const totalRow = document.createElement('tr'); totalRow.className = 'total-row'; const totalColor = totalScore >= 0 ? '#FFD700' : '#ff6b6b'; totalRow.innerHTML = `<td><strong>TOTAL</strong></td><td></td><td style="color:${totalColor}"><strong>${totalScore > 0 ? '+' : ''}${totalScore} pts</strong></td>`; tableBody.appendChild(totalRow);
+
+      // Ligne TOTAL
+      var totalRow = document.createElement('tr');
+      totalRow.className = 'total-row';
+      var totalColor = totalScore >= 0 ? '#FFD700' : '#ff6b6b';
+      var totalSign = totalScore > 0 ? '+' : '';
+      totalRow.innerHTML = '<td><strong>TOTAL</strong></td><td></td>' +
+        '<td style="color:' + totalColor + '"><strong>' + totalSign + totalScore + ' pts</strong></td>';
+      tableBody.appendChild(totalRow);
     },
 
-    populateScoreTable3D: function () {
-      const endScreen3D = document.querySelector('#end-screen-3d'); if (!endScreen3D) return;
-      const old = document.querySelector('#dynamic-score-table-3d'); if (old) old.parentNode.removeChild(old);
+    // Tableau 3D (dans le casque VR)
+    _populateScoreTable3D: function () {
+      var endScreen3D = document.querySelector('#end-screen-3d');
+      if (!endScreen3D) return;
+
+      // Supprimer l'ancien tableau
+      var old = document.querySelector('#dynamic-score-table-3d');
+      if (old) old.parentNode.removeChild(old);
       if (caughtFishes.length === 0) {
-        const t = document.createElement('a-text'); t.setAttribute('id','score-list-3d'); t.setAttribute('value','No fish caught...'); t.setAttribute('align','center'); t.setAttribute('color','#999999'); t.setAttribute('width','1.8'); t.setAttribute('position','0 0 0'); endScreen3D.appendChild(t); return;
+        var emptyText = document.createElement('a-text');
+        emptyText.setAttribute('id', 'dynamic-score-table-3d');
+        emptyText.setAttribute('value', 'No fish caught...');
+        emptyText.setAttribute('align', 'center');
+        emptyText.setAttribute('color', '#999999');
+        emptyText.setAttribute('width', '1.8');
+        emptyText.setAttribute('position', '0 0 0');
+        endScreen3D.appendChild(emptyText);
+        return;
       }
-      const tableContainer = document.createElement('a-entity'); tableContainer.setAttribute('id','dynamic-score-table-3d'); tableContainer.setAttribute('position','0 0.3 0.01');
-      const fishGroups = {}; let calcTotal = 0; caughtFishes.forEach(f=>{ const key = `${f.type}_${f.isCorrect ? 'correct' : 'incorrect'}`; if(!fishGroups[key]) fishGroups[key] = { count:0, points:0, name: (f.type==='piranha'?'🐠 Piranha':'🐟 Poisson') + (f.isCorrect?' ✅':' ❌'), isCorrect: f.isCorrect }; fishGroups[key].count++; fishGroups[key].points += f.points; calcTotal += f.points; }); totalScore = calcTotal;
-      // headers
-      const headerBg = document.createElement('a-plane'); headerBg.setAttribute('color','#FFD700'); headerBg.setAttribute('opacity','0.2'); headerBg.setAttribute('width','1.1'); headerBg.setAttribute('height','0.08'); headerBg.setAttribute('position','0 0 -0.01'); tableContainer.appendChild(headerBg);
-      const header1 = document.createElement('a-text'); header1.setAttribute('value','Fish Type'); header1.setAttribute('align','left'); header1.setAttribute('color','#FFD700'); header1.setAttribute('width','1'); header1.setAttribute('position','-0.52 0 0'); tableContainer.appendChild(header1);
-      const header2 = document.createElement('a-text'); header2.setAttribute('value','Quantity'); header2.setAttribute('align','center'); header2.setAttribute('color','#FFD700'); header2.setAttribute('width','1'); header2.setAttribute('position','0 0 0'); tableContainer.appendChild(header2);
-      const header3 = document.createElement('a-text'); header3.setAttribute('value','Points'); header3.setAttribute('align','right'); header3.setAttribute('color','#FFD700'); header3.setAttribute('width','1'); header3.setAttribute('position','0.52 0 0'); tableContainer.appendChild(header3);
-      let yPosition = -0.12; Object.values(fishGroups).forEach(group => { const rowBg = document.createElement('a-plane'); rowBg.setAttribute('color', group.isCorrect ? '#00ff00' : '#ff0000'); rowBg.setAttribute('opacity','0.1'); rowBg.setAttribute('width','1.1'); rowBg.setAttribute('height','0.08'); rowBg.setAttribute('position',`0 ${yPosition} -0.01`); tableContainer.appendChild(rowBg); const col1 = document.createElement('a-text'); col1.setAttribute('value', group.name); col1.setAttribute('align','left'); col1.setAttribute('color','#ffffff'); col1.setAttribute('width','0.9'); col1.setAttribute('position',`-0.52 ${yPosition} 0`); tableContainer.appendChild(col1); const col2 = document.createElement('a-text'); col2.setAttribute('value', `x ${group.count}`); col2.setAttribute('align','center'); col2.setAttribute('color','#ffffff'); col2.setAttribute('width','1'); col2.setAttribute('position',`0 ${yPosition} 0`); tableContainer.appendChild(col2); const col3 = document.createElement('a-text'); const pointsColor = group.points >= 0 ? '#00ff00' : '#ff0000'; const sign = group.points > 0 ? '+' : ''; col3.setAttribute('value', `${sign}${group.points} pts`); col3.setAttribute('align','right'); col3.setAttribute('color', pointsColor); col3.setAttribute('width','1'); col3.setAttribute('position',`0.52 ${yPosition} 0`); tableContainer.appendChild(col3); yPosition -= 0.10; });
-      // TOTAL
-      yPosition -= 0.02; const totalBg = document.createElement('a-plane'); totalBg.setAttribute('color','#FFD700'); totalBg.setAttribute('opacity','0.25'); totalBg.setAttribute('width','1.1'); totalBg.setAttribute('height','0.09'); totalBg.setAttribute('position',`0 ${yPosition} -0.01`); tableContainer.appendChild(totalBg); const totalLabel = document.createElement('a-text'); totalLabel.setAttribute('value','TOTAL'); totalLabel.setAttribute('align','left'); totalLabel.setAttribute('color','#FFD700'); totalLabel.setAttribute('width','1'); totalLabel.setAttribute('position',`-0.52 ${yPosition} 0`); tableContainer.appendChild(totalLabel); const totalValue = document.createElement('a-text'); const totalColor = totalScore >= 0 ? '#FFD700' : '#ff6b6b'; const totalSign = totalScore > 0 ? '+' : ''; totalValue.setAttribute('value', `${totalSign}${totalScore} pts`); totalValue.setAttribute('align','right'); totalValue.setAttribute('color', totalColor); totalValue.setAttribute('width','1'); totalValue.setAttribute('position', `0.52 ${yPosition} 0`); tableContainer.appendChild(totalValue);
-      endScreen3D.appendChild(tableContainer);
+
+      var result = groupCaughtFishes();
+      var groups = result.groups;
+
+      var container = document.createElement('a-entity');
+      container.setAttribute('id', 'dynamic-score-table-3d');
+      container.setAttribute('position', '0 0.3 0.01');
+
+      // En-tête
+      this._add3DPlane(container, '#FFD700', 0.2, '1.1', '0.08', '0 0 -0.01');
+      this._add3DText(container, 'Fish Type', 'left', '#FFD700', '-0.52 0 0');
+      this._add3DText(container, 'Quantity', 'center', '#FFD700', '0 0 0');
+      this._add3DText(container, 'Points', 'right', '#FFD700', '0.52 0 0');
+
+      // Lignes par groupe
+      var yPos = -0.12;
+      var self = this;
+      Object.values(groups).forEach(function (group) {
+        var bgColor = group.isCorrect ? '#00ff00' : '#ff0000';
+        self._add3DPlane(container, bgColor, 0.1, '1.1', '0.08', '0 ' + yPos + ' -0.01');
+        self._add3DText(container, group.name, 'left', '#ffffff', '-0.52 ' + yPos + ' 0', '0.9');
+        self._add3DText(container, 'x ' + group.count, 'center', '#ffffff', '0 ' + yPos + ' 0');
+
+        var pointsColor = group.points >= 0 ? '#00ff00' : '#ff0000';
+        var sign = group.points > 0 ? '+' : '';
+        self._add3DText(container, sign + group.points + ' pts', 'right', pointsColor, '0.52 ' + yPos + ' 0');
+
+        yPos -= 0.10;
+      });
+
+      // Ligne TOTAL
+      yPos -= 0.02;
+      this._add3DPlane(container, '#FFD700', 0.25, '1.1', '0.09', '0 ' + yPos + ' -0.01');
+      this._add3DText(container, 'TOTAL', 'left', '#FFD700', '-0.52 ' + yPos + ' 0');
+
+      var totalColor = totalScore >= 0 ? '#FFD700' : '#ff6b6b';
+      var totalSign = totalScore > 0 ? '+' : '';
+      this._add3DText(container, totalSign + totalScore + ' pts', 'right', totalColor, '0.52 ' + yPos + ' 0');
+
+      endScreen3D.appendChild(container);
+    },
+
+    // Helpers pour créer les éléments 3D
+    _add3DText: function (parent, value, align, color, position, width) {
+      var text = document.createElement('a-text');
+      text.setAttribute('value', value);
+      text.setAttribute('align', align);
+      text.setAttribute('color', color);
+      text.setAttribute('width', width || '1');
+      text.setAttribute('position', position);
+      parent.appendChild(text);
+    },
+
+    _add3DPlane: function (parent, color, opacity, width, height, position) {
+      var plane = document.createElement('a-plane');
+      plane.setAttribute('color', color);
+      plane.setAttribute('opacity', opacity);
+      plane.setAttribute('width', width);
+      plane.setAttribute('height', height);
+      plane.setAttribute('position', position);
+      parent.appendChild(plane);
     },
 
     resetGame: function () {
-      gameActive = false; if (timerInterval) clearInterval(timerInterval); timeRemaining = 60; caughtFishes = []; totalScore = 0;
-      const endGameScreen = document.getElementById('end-game-screen'); if (endGameScreen) endGameScreen.style.display = 'none';
-      const endScreen3D = document.querySelector('#end-screen-3d'); if (endScreen3D) endScreen3D.setAttribute('visible','false');
-      const timer3D = document.querySelector('#timer-3d'); if (timer3D) timer3D.setAttribute('visible','false');
-      const timerDisplay = document.getElementById('timer-display'); if (timerDisplay) { timerDisplay.style.display = 'none'; timerDisplay.textContent = '1:00'; timerDisplay.style.color = '#FFD700'; }
-      const timerText3D = document.querySelector('#timer-text'); if (timerText3D) { timerText3D.setAttribute('value','1:00'); timerText3D.setAttribute('color','#FFD700'); }
-      const scoreDisplayReset = document.querySelector('#score-display'); if (scoreDisplayReset) scoreDisplayReset.setAttribute('value','Fish: 0 | Points: 0');
-      const grabManager = document.querySelector('[grab-manager]'); if (grabManager && grabManager.components && grabManager.components['grab-manager']) { grabManager.components['grab-manager'].fishCaught = 0; grabManager.components['grab-manager'].points = 0; }
-      const fishTargets = document.querySelectorAll('.fish-target'); fishTargets.forEach(f => { delete f.dataset.caught; f.setAttribute('visible', 'false'); });
-      console.log('🔄 Game reset');
+      gameActive = false;
+      if (timerInterval) clearInterval(timerInterval);
+      timeRemaining = 60;
+      caughtFishes = [];
+      totalScore = 0;
+
+      // Cacher les écrans de fin
+      var endGameScreen = document.getElementById('end-game-screen');
+      if (endGameScreen) endGameScreen.style.display = 'none';
+      var endScreen3D = document.querySelector('#end-screen-3d');
+      if (endScreen3D) endScreen3D.setAttribute('visible', 'false');
+      var timer3D = document.querySelector('#timer-3d');
+      if (timer3D) timer3D.setAttribute('visible', 'false');
+
+      // Réinitialiser le timer HTML
+      var timerDisplay = document.getElementById('timer-display');
+      if (timerDisplay) {
+        timerDisplay.style.display = 'none';
+        timerDisplay.textContent = '1:00';
+        timerDisplay.style.color = '#FFD700';
+        // Arrêter le pulse GSAP si actif
+        if (timerDisplay._pulsing && window.GameAnimations) {
+          timerDisplay._pulsing = false;
+          GameAnimations.stopPulse(timerDisplay);
+        }
+      }
+
+      // Réinitialiser le timer 3D
+      var timerText3D = document.querySelector('#timer-text');
+      if (timerText3D) {
+        timerText3D.setAttribute('value', '1:00');
+        timerText3D.setAttribute('color', '#FFD700');
+      }
+
+      // Réinitialiser le score
+      var scoreDisplay = document.querySelector('#score-display');
+      if (scoreDisplay) scoreDisplay.setAttribute('value', 'Fish: 0 | Points: 0');
+      var grabManager = document.querySelector('[grab-manager]');
+      if (grabManager && grabManager.components && grabManager.components['grab-manager']) {
+        grabManager.components['grab-manager'].fishCaught = 0;
+        grabManager.components['grab-manager'].points = 0;
+      }
+
+      // Cacher les poissons restants
+      var fishTargets = document.querySelectorAll('.fish-target');
+      fishTargets.forEach(function (f) {
+        delete f.dataset.caught;
+        f.setAttribute('visible', 'false');
+      });
     },
 
     isGameActive: function () { return gameActive; },
@@ -181,5 +337,4 @@
     getTotalScore: function () { return totalScore; }
   };
 
-  console.log('✅ Game timer system loaded');
 })();

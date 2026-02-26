@@ -7,13 +7,19 @@
   <title>Spearfisher - SAE 4.02</title>
   <link rel="stylesheet" href="src/styles/style.css">
 
-  <!-- Importation d'A-Frame et des extensions nécessaires -->
+  <!-- A-Frame et extensions -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="src/utils/compatibility-shims.js"></script>
+  <script src="src/config.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.2.0/dist/aframe-extras.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-physics-system@4.0.1/dist/aframe-physics-system.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/gh/c-frame/aframe-physics-system@4.0.1/dist/aframe-physics-system.min.js"></script>
 
-  <!-- Importation des composants -->
+  <!-- GSAP -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="src/animations.js"></script>
+
+  <!-- Composants -->
   <script src="src/components/water-effect.js"></script>
   <script src="src/components/water-adapter.js"></script>
   <script src="src/components/grab-manager.js"></script>
@@ -26,14 +32,14 @@
 </head>
 
 <body>
-  <!-- Chronomètre en jeu (HTML overlay pour PC) -->
+  <!-- Chronomètre HTML -->
   <div id="timer-display" style="display:none;">1:00</div>
-  <!-- Bouton pour entrer en mode AR -->
+  <!-- Bouton AR -->
   <div id="ar-overlay">
     <button id="ar-button">Enter AR 🥽</button>
   </div>
 
-  <!-- End game HTML overlay (shown when time ends or all fishes are caught) -->
+  <!-- End game HTML overlay -->
   <div id="end-game-screen">
     <div class="end-game-container">
       <div class="end-game-header">
@@ -43,7 +49,13 @@
 
       <div class="score-table-wrapper">
         <table id="score-table">
-          <thead><tr><th>Fish</th><th>Quantity</th><th>Points</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Fish</th>
+              <th>Quantity</th>
+              <th>Points</th>
+            </tr>
+          </thead>
           <tbody id="score-table-body"></tbody>
         </table>
       </div>
@@ -55,10 +67,10 @@
     </div>
   </div>
 
-  <!-- Scène A-Frame avec configuration WebXR native pour AR -->
-  <a-scene webxr="referenceSpaceType: local-floor; overlayElement: #ar-overlay; requiredFeatures: local-floor, hit-test, plane-detection, mesh-detection; optionalFeatures: depth-sensing, anchors;" room-detection
-    grab-manager
-    physics="gravity: 0"
+  <!-- Scène A-Frame -->
+  <a-scene
+    webxr="referenceSpaceType: local-floor; overlayElement: #ar-overlay; requiredFeatures: local-floor, hit-test, plane-detection, mesh-detection; optionalFeatures: depth-sensing, anchors;"
+    room-detection="enableTest: true" grab-manager physics="gravity: 0"
     fog="type: exponential; color: #001a33; density: 0.02"
     renderer="colorManagement: true; alpha: true; antialias: true; sortTransparentObjects: true">
 
@@ -71,75 +83,82 @@
       <a-asset-item id="starfish" src="assets/models/Starfish.glb"></a-asset-item>
     </a-assets>
 
-    <!-- Ancre monde : tous les objets 3D sont enfants de cette entité pour rester fixes dans l'espace réel -->
+    <!-- Ancre monde -->
     <a-entity id="world-anchor" fish-spawner="count: 12">
 
-    <!-- Camera HUD: bonus target, score and 3D timer -->
-    <a-entity id="cameraRig">
-      <a-camera id="head" look-controls>
-        <!-- Cursor for mouse (desktop) and gaze interactions -->
-        <a-entity cursor="rayOrigin: mouse" raycaster="objects: .clickable" position="0 0 -1"></a-entity>
-        <a-entity id="bonus-fish" position="-0.15 0.2 -0.7" scale="0.8 0.8 0.8" visible="false">
-          <a-plane color="#1a1a1a" opacity="0.9" width="0.38" height="0.28" position="0 0 -0.015"></a-plane>
-          <a-box color="#FFD700" width="0.38" height="0.015" depth="0.01" position="0 0.14 0" material="metalness: 0.8; roughness: 0.2"></a-box>
-          <a-box color="#FFD700" width="0.38" height="0.015" depth="0.01" position="0 -0.14 0" material="metalness: 0.8; roughness: 0.2"></a-box>
-          <a-entity position="0 0 0.03">
-            <a-entity id="fish-3d" gltf-model="#goldfish" position="0.05 0.02 0" rotation="0 90 0" scale="0.004 0.004 0.004" fish-rotator="interval: 8000"></a-entity>
-            <a-text value="TARGET" align="center" color="#FFD700" width="0.8" position="0.02 -0.08 0.01" font="roboto"></a-text>
+      <!-- Camera HUD -->
+      <a-entity id="cameraRig">
+        <a-camera id="head" look-controls>
+          <!-- Cursor for mouse (desktop) and gaze interactions -->
+          <a-entity cursor="rayOrigin: mouse" raycaster="objects: .clickable" position="0 0 -1"></a-entity>
+
+          <a-entity id="bonus-fish" position="-0.15 0.2 -0.7" scale="0.8 0.8 0.8" visible="false">
+            <a-plane color="#1a1a1a" opacity="0.9" width="0.38" height="0.28" position="0 0 -0.015"></a-plane>
+            <a-box color="#FFD700" width="0.38" height="0.015" depth="0.01" position="0 0.14 0"
+              material="metalness: 0.8; roughness: 0.2"></a-box>
+            <a-box color="#FFD700" width="0.38" height="0.015" depth="0.01" position="0 -0.14 0"
+              material="metalness: 0.8; roughness: 0.2"></a-box>
+            <a-entity position="0 0 0.03">
+              <a-entity id="fish-3d" gltf-model="#goldfish" position="0.05 0.02 0" rotation="0 90 0"
+                scale="0.004 0.004 0.004" fish-rotator="interval: 8000"></a-entity>
+              <a-text value="TARGET" align="center" color="#FFD700" width="0.8" position="0.02 -0.08 0.01"
+                font="roboto"></a-text>
+            </a-entity>
           </a-entity>
-        </a-entity>
 
-        <a-text id="score-display" value="Fish: 0" position="-0.15 0.0 -0.7" align="center" color="#FFD700" width="0.6" font="roboto" shader="msdf" visible="false"></a-text>
+          <a-text id="score-display" value="Fish: 0" position="-0.15 0.0 -0.7" align="center" color="#FFD700"
+            width="0.6" font="roboto" shader="msdf" visible="false"></a-text>
 
-        <a-entity id="timer-3d" position="0.25 0.25 -0.7" scale="0.6 0.6 0.6" visible="false">
-          <a-plane color="#000000" opacity="0.8" width="0.25" height="0.12" position="0 0 -0.01"></a-plane>
-          <a-text id="timer-text" value="1:00" align="center" color="#FFD700" width="0.8" position="0 0 0"></a-text>
-        </a-entity>
+          <a-entity id="timer-3d" position="0.25 0.25 -0.7" scale="0.6 0.6 0.6" visible="false">
+            <a-plane color="#000000" opacity="0.8" width="0.25" height="0.12" position="0 0 -0.01"></a-plane>
+            <a-text id="timer-text" value="1:00" align="center" color="#FFD700" width="0.8" position="0 0 0"></a-text>
+          </a-entity>
 
-        <!-- Start button for VR (3D) - hidden until room scan completes -->
-        <a-entity id="start-button-3d" class="clickable" position="0 -0.1 -0.7" visible="false">
-          <a-box class="clickable" color="#3498db" width="0.45" height="0.12" depth="0.03">
-            <a-text value="▶ PLAY" align="center" anchor="center" baseline="center" color="#ffffff" width="1.2" position="0 0 0.02"></a-text>
-          </a-box>
-        </a-entity>
+          <!-- Start button 3D -->
+          <a-entity id="start-button-3d" class="clickable" position="0 -0.1 -0.7" visible="false">
+            <a-box class="clickable" color="#3498db" width="0.45" height="0.12" depth="0.03">
+              <a-text value="▶ PLAY" align="center" anchor="center" baseline="center" color="#ffffff" width="1.2"
+                position="0 0 0.02"></a-text>
+            </a-box>
+          </a-entity>
 
-        <!-- Écran de fin de jeu en 3D (copie depuis la branche score-challenge) -->
-        <a-entity id="end-screen-3d" position="0 0 -1.5" visible="false">
-          <!-- Fond du panneau -->
-          <a-plane color="#1a1a2e" opacity="0.95" width="1.2" height="1.6" position="0 0 -0.02" material="shader: flat"></a-plane>
-          <!-- Bordure dorée -->
-          <a-box color="#FFD700" width="1.2" height="0.02" depth="0.01" position="0 0.8 0"></a-box>
-          <a-box color="#FFD700" width="1.2" height="0.02" depth="0.01" position="0 -0.8 0"></a-box>
-          <a-box color="#FFD700" width="0.02" height="1.6" depth="0.01" position="-0.6 0 0"></a-box>
-          <a-box color="#FFD700" width="0.02" height="1.6" depth="0.01" position="0.6 0 0"></a-box>
+          <!-- Écran de fin 3D -->
+          <a-entity id="end-screen-3d" position="0 0 -1.5" visible="false">
+            <!-- Fond -->
+            <a-plane color="#1a1a2e" opacity="0.95" width="1.2" height="1.6" position="0 0 -0.02"
+              material="shader: flat"></a-plane>
+            <!-- Bordure -->
+            <a-box color="#FFD700" width="1.2" height="0.02" depth="0.01" position="0 0.8 0"></a-box>
+            <a-box color="#FFD700" width="1.2" height="0.02" depth="0.01" position="0 -0.8 0"></a-box>
+            <a-box color="#FFD700" width="0.02" height="1.6" depth="0.01" position="-0.6 0 0"></a-box>
+            <a-box color="#FFD700" width="0.02" height="1.6" depth="0.01" position="0.6 0 0"></a-box>
 
-          <!-- Titre -->
-          <a-text value="🎣 FIN DE LA PARTIE 🎣" align="center" color="#FFD700" width="1.8" position="0 0.65 0"></a-text>
-          <a-text value="Poissons attrapés" align="center" color="#FFD700" width="1.5" position="0 0.52 0"></a-text>
+            <!-- Titre -->
+            <a-text value="🎣 FIN DE LA PARTIE 🎣" align="center" color="#FFD700" width="1.8"
+              position="0 0.65 0"></a-text>
+            <a-text value="Poissons attrapés" align="center" color="#FFD700" width="1.5" position="0 0.52 0"></a-text>
 
-          <!-- Le tableau sera généré dynamiquement ici par populateScoreTable3D() -->
-          <a-entity id="dynamic-score-table-3d" position="0 0 0.01"></a-entity>
+            <!-- Score dynamique -->
+            <a-entity id="dynamic-score-table-3d" position="0 0 0.01"></a-entity>
 
-          <!-- Boutons interactifs avec animations hover -->
-          <a-box id="btn-restart-3d" class="clickable" color="#FFD700" width="0.45" height="0.12" depth="0.03" position="-0.25 -0.65 0.02"
-                 animation__hover="property: scale; from: 1 1 1; to: 1.1 1.1 1.1; startEvents: mouseenter; dur: 200"
-                 animation__leave="property: scale; from: 1.1 1.1 1.1; to: 1 1 1; startEvents: mouseleave; dur: 200">
-            <a-text value="🔄 REJOUER" align="center" color="#000000" width="1.2" position="0 0 0.02"></a-text>
-          </a-box>
+            <!-- Boutons -->
+            <a-box id="btn-restart-3d" class="clickable" color="#FFD700" width="0.45" height="0.12" depth="0.03"
+              position="-0.25 -0.65 0.02">
+              <a-text value="🔄 REJOUER" align="center" color="#000000" width="1.2" position="0 0 0.02"></a-text>
+            </a-box>
 
-          <a-box id="btn-quit-3d" class="clickable" color="#e74c3c" width="0.45" height="0.12" depth="0.03" position="0.25 -0.65 0.02"
-                 animation__hover="property: scale; from: 1 1 1; to: 1.1 1.1 1.1; startEvents: mouseenter; dur: 200"
-                 animation__leave="property: scale; from: 1.1 1.1 1.1; to: 1 1 1; startEvents: mouseleave; dur: 200">
-            <a-text value="❌ QUITTER" align="center" color="#ffffff" width="1.2" position="0 0 0.02"></a-text>
-          </a-box>
-        </a-entity>
+            <a-box id="btn-quit-3d" class="clickable" color="#e74c3c" width="0.45" height="0.12" depth="0.03"
+              position="0.25 -0.65 0.02">
+              <a-text value="❌ QUITTER" align="center" color="#ffffff" width="1.2" position="0 0 0.02"></a-text>
+            </a-box>
+          </a-entity>
 
-      </a-camera>
-    </a-entity>
+        </a-camera>
+      </a-entity>
 
-    <!-- Ground for physics collisions -->
-    <a-entity id="ground" geometry="primitive: plane; width: 20; height: 20" rotation="-90 0 0" position="0 0 0" visible="false" static-body></a-entity>
-      <!-- Les poissons seront générés automatiquement par fish-spawner après le scan de la pièce -->
+      <!-- Sol physique -->
+      <a-entity id="ground" geometry="primitive: plane; width: 20; height: 20" rotation="-90 0 0" position="0 0 0"
+        visible="false" static-body></a-entity>
 
       <!-- Lumières -->
       <a-light type="ambient" color="#ffffff" intensity="0.6"></a-light>
@@ -147,72 +166,41 @@
       <!-- Lumière bleutée sous l'eau -->
       <a-light type="point" color="#0088ff" intensity="0.5" position="0 0.5 -2"></a-light>
 
-      <!-- Spear model (replace the blue cube) - grabbable -->
-      <a-entity id="spear" weapon position="0 1.45 -0.6" rotation="0 90 0" 
-            class="weapon"
-            geometry="primitive: box; width: 0.05; height: 0.05; depth: 0.6" 
-            material="color: #ff0000; opacity: 0.3; transparent: true"
-            gltf-model="#spear-model"
-            scale="0.5 0.5 0.5"
-            dynamic-body="mass:1">
+      <!-- Harpon -->
+      <a-entity id="spear" weapon position="0 1.45 -0.6" rotation="0 90 0" class="weapon"
+        geometry="primitive: box; width: 0.05; height: 0.05; depth: 0.6"
+        material="color: #ff0000; opacity: 0.3; transparent: true" gltf-model="#spear-model" scale="0.5 0.5 0.5"
+        dynamic-body="mass:1">
       </a-entity>
 
-      <!-- Les poissons seront générés automatiquement par fish-spawner après le scan de la pièce -->
-
-      <!-- Bubble spawner: spawn intermittently under water inside the detected room -->
+      <!-- Bulles -->
       <a-entity id="bubble-spawner" bubble-spawner></a-entity>
 
-      <!-- Coral placer: place coral models on yellow visuals and on the floor after scan -->
+      <!-- Coraux -->
       <a-entity id="coral-placer" coral-placer></a-entity>
 
     </a-entity>
 
-    <!-- VR Hands with laser controls and raycasters to interact with 3D UI -->
-    <a-entity id="leftHand" hand-controls="hand: left; handModelStyle: lowPoly; color: #15ACCF" laser-controls="hand: left" raycaster="objects: .clickable"></a-entity>
-    <a-entity id="rightHand" hand-controls="hand: right; handModelStyle: lowPoly; color: #15ACCF" laser-controls="hand: right" raycaster="objects: .clickable"></a-entity>
+    <!-- Mains VR -->
+    <a-entity id="leftHand" laser-controls="hand: left; defaultModelColor: #15ACCF"
+      raycaster="objects: .clickable, .fish-target; far: 10"></a-entity>
+    <a-entity id="rightHand" laser-controls="hand: right; defaultModelColor: #15ACCF"
+      raycaster="objects: .clickable, .fish-target; far: 10"></a-entity>
 
-    <!-- EFFET D'EAU QUI MONTE avec shader Three.js (positionnée dans le monde, pas au niveau de la caméra) -->
+    <!-- Effet d'eau -->
     <a-entity id="water-surface" position="0 0 -2" water-adapter>
 
-      <!-- Surface d'eau avec effet de vagues fluides (couche principale bleu profond) -->
-      <a-entity id="water-fluid"
-        visible="false"
+      <a-entity id="water-fluid" visible="false"
         water-shader="color: #004b7f; opacity: 0.75; speed: 1.5; waveHeight: 0.08; waveFrequency: 1.5">
       </a-entity>
-
-      <!-- Deuxième couche d'eau plus claire pour la profondeur -->
       <a-entity position="0 -0.05 0" visible="false"
         water-shader="color: #006fb3; opacity: 0.35; speed: 0.8; waveHeight: 0.05; waveFrequency: 2.0">
       </a-entity>
     </a-entity>
 
-    <!-- (moved bubble-spawner into world-anchor) -->
-
   </a-scene>
 
   <script src="src/systems/game-manager.js"></script>
-  <script>
-    // End-game overlay buttons
-    (function () {
-      const restart = document.getElementById('btn-restart');
-      const quit = document.getElementById('btn-quit');
-      const endScreen = document.getElementById('end-game-screen');
-      if (restart) restart.addEventListener('click', () => {
-        try {
-          if (window.gameTimer && window.gameTimer.resetGame) window.gameTimer.resetGame();
-          // small delay then start a fresh game (default 60s)
-          setTimeout(() => { try { if (window.gameTimer && window.gameTimer.startGame) window.gameTimer.startGame(60); } catch(e){} }, 200);
-        } catch (e) { console.warn('restart click error', e); }
-      });
-      if (quit) quit.addEventListener('click', () => {
-        try {
-          if (window.gameTimer && window.gameTimer.resetGame) window.gameTimer.resetGame();
-        } catch (e) {}
-        // Reload page as a simple quit action to return to the launcher state
-        try { window.location.reload(); } catch (e) { if (endScreen) endScreen.style.display = 'none'; }
-      });
-    })();
-  </script>
 </body>
 
 </html>

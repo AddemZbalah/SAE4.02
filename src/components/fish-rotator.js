@@ -3,26 +3,25 @@ AFRAME.registerComponent('fish-rotator', {
   schema: { interval: { type: 'number', default: 10000 } },
 
   init: function () {
-    // list of models to rotate in the bonus panel: include all available fish
-    this.fishModels = [
-      // reduce goldfish for HUD clarity
+    var config = window.GAME_CONFIG || {};
+    this.fishModels = config.BONUS_FISH_MODELS || [
       { type: 'goldfish', model: '#goldfish', position: '0.05 0.02 0', rotation: '0 90 0', scale: '0.004 0.004 0.004' },
-      // slightly smaller piranha
       { type: 'piranha', model: '#piranha', position: '0 -0.02 0', rotation: '0 90 0', scale: '0.008 0.008 0.008' },
-      // thon reduced
       { type: 'thon', model: '#thon', position: '0 0 0', rotation: '0 90 0', scale: '0.006 0.006 0.006' },
-      // thon_bleu slightly enlarged
-      { type: 'thon_bleu', model: '#thon_bleu', position: '0 0 0', rotation: '0 90 0', scale: '0.012 0.012 0.012' },
-      // starfish intentionally excluded from bonus rotation (not considered a target fish)
+      { type: 'thon_bleu', model: '#thon_bleu', position: '0 0 0', rotation: '0 90 0', scale: '0.012 0.012 0.012' }
     ];
     this.currentIndex = 0;
-    if (this.el.sceneEl.hasLoaded) this.startRotation(); else this.el.sceneEl.addEventListener('loaded', () => this.startRotation());
+    var self = this;
+    if (this.el.sceneEl.hasLoaded) this.startRotation(); else this.el.sceneEl.addEventListener('loaded', function () { self.startRotation(); });
   },
 
   startRotation: function () {
-    const self = this;
-    this.intervalId = setInterval(() => { self.nextFish(); }, this.data.interval);
-    // initialize first
+    var self = this;
+    // Boucle GSAP : appeler nextFish régulièrement
+    this._rotationCall = gsap.delayedCall(this.data.interval / 1000, function repeat() {
+      self.nextFish();
+      self._rotationCall = gsap.delayedCall(self.data.interval / 1000, repeat);
+    });
     this.applyCurrent();
   },
 
@@ -30,14 +29,16 @@ AFRAME.registerComponent('fish-rotator', {
   getCurrentFishModel: function () { return this.fishModels[this.currentIndex].model; },
 
   applyCurrent: function () {
-    const d = this.fishModels[this.currentIndex];
-    this.el.removeAttribute('gltf-model');
-    setTimeout(() => {
-      this.el.setAttribute('gltf-model', d.model);
-      this.el.setAttribute('position', d.position);
-      this.el.setAttribute('rotation', d.rotation);
-      this.el.setAttribute('scale', d.scale);
-    }, 50);
+    var d = this.fishModels[this.currentIndex];
+    var el = this.el;
+    el.removeAttribute('gltf-model');
+    // Petit délai GSAP avant d'appliquer le nouveau modèle
+    gsap.delayedCall(0.05, function () {
+      el.setAttribute('gltf-model', d.model);
+      el.setAttribute('position', d.position);
+      el.setAttribute('rotation', d.rotation);
+      el.setAttribute('scale', d.scale);
+    });
   },
 
   nextFish: function () {
@@ -45,5 +46,7 @@ AFRAME.registerComponent('fish-rotator', {
     this.applyCurrent();
   },
 
-  remove: function () { if (this.intervalId) clearInterval(this.intervalId); }
+  remove: function () {
+    if (this._rotationCall) this._rotationCall.kill();
+  }
 });

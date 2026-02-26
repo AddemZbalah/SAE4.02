@@ -1,157 +1,162 @@
-/**
- * water-adapter.js
- * Composant qui adapte la taille et position de l'eau selon les dimensions de la pièce
- */
-
+// Adapte la taille et position de l'eau selon les dimensions de la pièce
 AFRAME.registerComponent('water-adapter', {
   schema: {
-    // Marge autour de la pièce pour que l'eau déborde légèrement
-    margin: {type: 'number', default: 0.5}
+    margin: { type: 'number', default: 0.5 }
   },
 
   init: function () {
-    console.log('💧 water-adapter: Init');
-    
     this.roomData = null;
-    this.waterLayers = [];
-    
-    // Écouter l'événement room-scanned
-    this.el.sceneEl.addEventListener('room-scanned', this._onRoomScanned.bind(this));
-    
-    console.log('💧 water-adapter: Waiting for room-scanned...');
+    this._geometryApplied = false;
+    var self = this;
+    this.el.sceneEl.addEventListener('room-scanned', function (event) { self._onRoomScanned(event); });
+    this.el.sceneEl.addEventListener('zone-updated', function (event) { self._onZoneUpdated(event); });
   },
 
-  _onRoomScanned: function(event) {
-    console.log('💧 water-adapter: room-scanned event received');
-    
-    const data = event.detail;
-    if (!data || !data.bounds) {
-      console.warn('💧 water-adapter: No bounds in room-scanned');
-      return;
-    }
-
+  _onRoomScanned: function (event) {
+    var data = event.detail;
+    if (!data) return;
     this.roomData = data;
-    console.log('💧 water-adapter: Room dimensions:', {
-      width: data.width,
-      depth: data.depth,
-      height: data.height,
-      centerX: data.centerX,
-      centerZ: data.centerZ,
-      floorY: data.floorY
-    });
+    this._applyRoomDimensions();
+  },
 
-    // Prepare water geometry/position but do NOT start any rise animation here.
-    // The actual rise will be triggered explicitly by calling `startRise()` (from the PLAY button).
+  _onZoneUpdated: function (event) {
+    var data = event.detail;
+    if (!data) return;
+    // Mettre à jour la position si les bounds changent (ex: headset reset)
+    if (data.bounds) {
+      if (!this.roomData) this.roomData = {};
+      this.roomData.bounds = data.bounds;
+      this.roomData.orientedBox = data.orientedBox || this.roomData.orientedBox;
+      this.roomData.floorY = data.floorY != null ? data.floorY : this.roomData.floorY;
+      this.roomData.height = data.height || this.roomData.height;
+      this._applyRoomDimensions();
+    }
+  },
+
+  /**
+   * Tente de récupérer les dimensions de la pièce depuis FISH_ZONE
+   * si room-scanned n'a pas fourni les bonnes données.
+   */
+  _ensureRoomData: function () {
+    if (this._geometryApplied) return;
+
+    var fz = window.FISH_ZONE;
+    if (!fz || !fz.scanned || !fz.roomBounds) return;
+
+    var b = fz.roomBounds;
+    var ob = fz.orientedBox;
+
+    // Construire roomData depuis FISH_ZONE
+    this.roomData = {
+      bounds: b,
+      width: (ob && ob.width) ? ob.width : (b.maxX - b.minX),
+      depth: (ob && ob.depth) ? ob.depth : (b.maxZ - b.minZ),
+      height: (fz.ceilingY - fz.floorY) || 2.5,
+      centerX: (ob && ob.centerX !== undefined) ? ob.centerX : ((b.minX + b.maxX) / 2),
+      centerZ: (ob && ob.centerZ !== undefined) ? ob.centerZ : ((b.minZ + b.maxZ) / 2),
+      floorY: fz.floorY || 0,
+      orientedBox: ob || null
+    };
+
+    console.log('[water-adapter] Fallback: dimensions from FISH_ZONE w=' +
+      this.roomData.width.toFixed(2) + ' d=' + this.roomData.depth.toFixed(2));
+    this._applyRoomDimensions();
+  },
+
+  _applyRoomDimensions: function () {
+    if (!this.roomData) return;
     this._updateWaterGeometry();
     this._updateWaterPosition();
     this._applyRotation();
-    // compute and store animation params for later start
     this._prepareAnimationParams();
   },
 
-  _updateWaterGeometry: function() {
+  _updateWaterGeometry: function () {
     if (!this.roomData) return;
 
-    const margin = this.data.margin;
-    const trim = 0.02; // petit retrait pour éviter le léger dépassement visuel
-    let width = this.roomData.width + (margin * 2) - (trim * 2);
-    let depth = this.roomData.depth + (margin * 2) - (trim * 2);
-    width = Math.max(0.1, width);
-    depth = Math.max(0.1, depth);
+    var margin = this.data.margin;
+    var trim = 0.02;
 
-    console.log('💧 water-adapter: New water size:', {width, depth, trim});
+    // Utiliser les dimensions de la box orientée si disponible
+    var ob = this.roomData.orientedBox;
+    var w = (ob && ob.width) ? ob.width : this.roomData.width;
+    var d = (ob && ob.depth) ? ob.depth : this.roomData.depth;
 
-    // Trouver tous les enfants avec water-shader
-    const waterEntities = this.el.querySelectorAll('[water-shader]');
-    // Update geometry for each layer but keep them hidden until startRise()
-    waterEntities.forEach((entity, index) => {
-      entity.setAttribute('water-shader', {
-        width: width,
-        depth: depth
-      });
-      try { entity.setAttribute('visible', 'false'); } catch (e) {}
-    });
+    if (!w || !d || !isFinite(w) || !isFinite(d)) {
+      console.warn('[water-adapter] Invalid dimensions: w=' + w + ' d=' + d);
+      return;
+    }
+
+    var width = Math.max(0.1, w + (margin * 2) - (trim * 2));
+    var depth = Math.max(0.1, d + (margin * 2) - (trim * 2));
+
+    console.log('[water-adapter] Applying geometry: ' + width.toFixed(2) + 'x' + depth.toFixed(2));
+
+    var waterEntities = this.el.querySelectorAll('[water-shader]');
+    for (var i = 0; i < waterEntities.length; i++) {
+      var entity = waterEntities[i];
+      entity.setAttribute('water-shader', 'width', width);
+      entity.setAttribute('water-shader', 'depth', depth);
+      try { entity.setAttribute('visible', 'false'); } catch (e) { }
+    }
+
+    this._geometryApplied = true;
   },
 
-  _updateWaterPosition: function() {
+  _updateWaterPosition: function () {
     if (!this.roomData) return;
-
-    const centerX = this.roomData.centerX;
-    const centerZ = this.roomData.centerZ;
-    const floorY = this.roomData.floorY;
-
-    // Positionner l'eau au niveau du sol, au centre de la pièce
-    const newPosition = `${centerX} ${floorY} ${centerZ}`;
-    this.el.setAttribute('position', newPosition);
-    
-    console.log('💧 water-adapter: New water position:', newPosition);
+    var ob = this.roomData.orientedBox;
+    var cx = (ob && ob.centerX !== undefined) ? ob.centerX : this.roomData.centerX;
+    var cz = (ob && ob.centerZ !== undefined) ? ob.centerZ : this.roomData.centerZ;
+    if (!isFinite(cx) || !isFinite(cz)) return;
+    var pos = cx + ' ' + (this.roomData.floorY || 0) + ' ' + cz;
+    this.el.setAttribute('position', pos);
   },
 
-  _updateAnimation: function() {
+  _prepareAnimationParams: function () {
     if (!this.roomData) return;
-
-    const centerX = this.roomData.centerX;
-    const centerZ = this.roomData.centerZ;
-    const floorY = this.roomData.floorY;
-    const height = this.roomData.height || 2.5;
-
-    // Position de départ : au sol
-    const from = `${centerX} ${floorY} ${centerZ}`;
-    // Position d'arrivée : hauteur de la pièce
-    const to = `${centerX} ${floorY + height} ${centerZ}`;
-
-    // For compatibility we compute and store the rise parameters; do not apply the animation yet.
-    this._riseParams = { property: 'position', from: from, to: to, dur: 10000, easing: 'easeInOutQuad' };
-    this._risePrepared = true;
+    var ob = this.roomData.orientedBox;
+    var cx = (ob && ob.centerX !== undefined) ? ob.centerX : this.roomData.centerX;
+    var cz = (ob && ob.centerZ !== undefined) ? ob.centerZ : this.roomData.centerZ;
+    var fy = this.roomData.floorY || 0;
+    var h = this.roomData.height || 2.5;
+    this._riseParams = {
+      from: cx + ' ' + fy + ' ' + cz,
+      to: cx + ' ' + (fy + h) + ' ' + cz,
+      dur: 10000
+    };
   },
 
-  _prepareAnimationParams: function() {
-    if (!this.roomData) return;
-    const centerX = this.roomData.centerX;
-    const centerZ = this.roomData.centerZ;
-    const floorY = this.roomData.floorY;
-    const height = this.roomData.height || 2.5;
-    const from = `${centerX} ${floorY} ${centerZ}`;
-    const to = `${centerX} ${floorY + height} ${centerZ}`;
-    this._riseParams = { property: 'position', from: from, to: to, dur: 10000, easing: 'easeInOutQuad' };
-    this._risePrepared = true;
-  },
-
-  startRise: function() {
-    // Start the water rise animation (only once)
+  startRise: function () {
     if (this._riseStarted) return;
     this._riseStarted = true;
 
-    // Reveal water layers
-    const waterEntities = this.el.querySelectorAll('[water-shader]');
-    waterEntities.forEach((entity) => { try { entity.setAttribute('visible', 'true'); } catch (e) {} });
-
-    // Apply prepared animation params if available
-    if (this._riseParams) {
-      // Ensure any previous named animation is removed
-      try { this.el.removeAttribute('animation__rise'); } catch (e) {}
-      this.el.setAttribute('animation__rise', this._riseParams);
-    } else {
-      // Fallback animation
-      this.el.setAttribute('animation__rise', 'property: position; to: 0 2.5 -2; dur: 10000; easing: easeInOutQuad');
+    // Fallback : si room-scanned n'a pas été reçu, essayer FISH_ZONE
+    if (!this._geometryApplied) {
+      this._ensureRoomData();
     }
 
-    // Emit an event to indicate the rise started (useful if callers want to react)
-    try { this.el.emit('water-rise-started'); } catch (e) {}
+    var waterEntities = this.el.querySelectorAll('[water-shader]');
+    for (var i = 0; i < waterEntities.length; i++) {
+      try { waterEntities[i].setAttribute('visible', 'true'); } catch (e) { }
+    }
+
+    var to = this._riseParams ? this._riseParams.to : '0 2.5 -2';
+    var dur = this._riseParams ? this._riseParams.dur : 10000;
+    var from = this._riseParams ? this._riseParams.from : null;
+
+    if (window.GameAnimations) {
+      GameAnimations.waterRise(this.el, from, to, dur);
+    }
+    try { this.el.emit('water-rise-started'); } catch (e) { }
   },
 
-
-  // Si la pièce a une rotation, on pourrait appliquer la rotation à l'eau
-  // Mais pour un plan d'eau horizontal, ce n'est généralement pas nécessaire
-  _applyRotation: function() {
+  _applyRotation: function () {
     if (!this.roomData || !this.roomData.orientedBox) return;
-
-    const rotationY = this.roomData.orientedBox.rotationY;
+    var rotationY = this.roomData.orientedBox.rotationY;
     if (rotationY && Math.abs(rotationY) > 0.01) {
-      // Convertir radians en degrés
-      const degrees = rotationY * (180 / Math.PI);
-      this.el.setAttribute('rotation', `0 ${degrees} 0`);
-      console.log('💧 water-adapter: Rotation applied:', degrees.toFixed(2), '°');
+      var degrees = rotationY * (180 / Math.PI);
+      this.el.setAttribute('rotation', '0 ' + degrees + ' 0');
     }
   }
 });
