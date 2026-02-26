@@ -19,6 +19,24 @@ AFRAME.registerComponent('grab-manager', {
     this.offset = new AFRAME.THREE.Vector3(0, 0, -0.2);
     this.collisionRadius = this.data.hitRadius || 0.18;
 
+    // Vecteurs pré-alloués (évite le garbage collector dans tick)
+    var THREE = AFRAME.THREE;
+    this._v = {
+      handPos: new THREE.Vector3(),
+      handQuat: new THREE.Quaternion(),
+      handUp: new THREE.Vector3(),
+      offsetWorld: new THREE.Vector3(),
+      targetPos: new THREE.Vector3(),
+      baseRotation: new THREE.Quaternion(),
+      spearPos: new THREE.Vector3(),
+      spearQuat: new THREE.Quaternion(),
+      tipOffset: new THREE.Vector3(),
+      tipPos: new THREE.Vector3(),
+      fishPos: new THREE.Vector3()
+    };
+    this._yFlipQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    this._xFlipQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+
     var self = this;
     var scene = this.el.sceneEl;
     scene.addEventListener('loaded', function () {
@@ -202,52 +220,53 @@ AFRAME.registerComponent('grab-manager', {
   tick: function () {
     if (!this.grabbedSpear || !this.grabbingHand) return;
 
-    var THREE = AFRAME.THREE;
-    var handPos = new THREE.Vector3();
-    var handQuat = new THREE.Quaternion();
-    this.grabbingHand.object3D.getWorldPosition(handPos);
-    this.grabbingHand.object3D.getWorldQuaternion(handQuat);
+    var v = this._v;
+    this.grabbingHand.object3D.getWorldPosition(v.handPos);
+    this.grabbingHand.object3D.getWorldQuaternion(v.handQuat);
 
     // Calculer la vélocité de la main
     var now = performance.now();
     if (this.lastHandPos && this.lastHandTime) {
       var dt = (now - this.lastHandTime) / 1000;
       if (dt > 0) {
-        this.lastHandVel = handPos.clone().sub(this.lastHandPos).divideScalar(dt);
+        this.lastHandVel.copy(v.handPos).sub(this.lastHandPos).divideScalar(dt);
       }
     }
-    this.lastHandPos = handPos.clone();
+    if (!this.lastHandPos) this.lastHandPos = new AFRAME.THREE.Vector3();
+    this.lastHandPos.copy(v.handPos);
     this.lastHandTime = now;
 
     // Vérifier si la main est retournée
-    var handUp = new THREE.Vector3(0, 1, 0).applyQuaternion(handQuat);
-    var isFlipped = handUp.y < 0;
-    var currentOffset = this.offset.clone();
-    if (isFlipped) currentOffset.set(0, 0, 0.2);
+    v.handUp.set(0, 1, 0).applyQuaternion(v.handQuat);
+    var isFlipped = v.handUp.y < 0;
 
     // Position et rotation cibles
-    var offsetWorld = currentOffset.clone().applyQuaternion(handQuat);
-    var targetPos = handPos.clone().add(offsetWorld);
-    var baseRotation = handQuat.clone();
-    baseRotation.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
-    if (isFlipped) baseRotation.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI));
+    if (isFlipped) {
+      v.offsetWorld.set(0, 0, 0.2).applyQuaternion(v.handQuat);
+    } else {
+      v.offsetWorld.copy(this.offset).applyQuaternion(v.handQuat);
+    }
+    v.targetPos.copy(v.handPos).add(v.offsetWorld);
+
+    v.baseRotation.copy(v.handQuat).multiply(this._yFlipQuat);
+    if (isFlipped) v.baseRotation.multiply(this._xFlipQuat);
 
     // Appliquer la position et rotation
     var spear = this.grabbedSpear;
     try {
       if (spear.body) {
         if (spear.body.position && typeof spear.body.position.set === 'function') {
-          spear.body.position.set(targetPos.x, targetPos.y, targetPos.z);
+          spear.body.position.set(v.targetPos.x, v.targetPos.y, v.targetPos.z);
         }
         if (spear.body.quaternion && typeof spear.body.quaternion.set === 'function') {
-          spear.body.quaternion.set(baseRotation.x, baseRotation.y, baseRotation.z, baseRotation.w);
+          spear.body.quaternion.set(v.baseRotation.x, v.baseRotation.y, v.baseRotation.z, v.baseRotation.w);
         }
       } else {
-        spear.object3D.position.copy(targetPos);
-        spear.object3D.quaternion.copy(baseRotation);
+        spear.object3D.position.copy(v.targetPos);
+        spear.object3D.quaternion.copy(v.baseRotation);
       }
     } catch (e) {
-      try { spear.object3D.position.copy(targetPos); spear.object3D.quaternion.copy(baseRotation); } catch (err) { /* ignore */ }
+      try { spear.object3D.position.copy(v.targetPos); spear.object3D.quaternion.copy(v.baseRotation); } catch (err) { /* ignore */ }
     }
 
     // Vérifier collision pendant le grab
@@ -257,21 +276,18 @@ AFRAME.registerComponent('grab-manager', {
   _checkSpearTipCollision: function (spear) {
     if (!spear || !spear.object3D) return false;
 
-    var THREE = AFRAME.THREE;
-    var spearPos = new THREE.Vector3();
-    spear.object3D.getWorldPosition(spearPos);
-    var spearQuat = new THREE.Quaternion();
-    spear.object3D.getWorldQuaternion(spearQuat);
-    var tipOffset = new THREE.Vector3(0, 0, 0.2).applyQuaternion(spearQuat);
-    var tipPos = spearPos.clone().add(tipOffset);
+    var v = this._v;
+    spear.object3D.getWorldPosition(v.spearPos);
+    spear.object3D.getWorldQuaternion(v.spearQuat);
+    v.tipOffset.set(0, 0, 0.2).applyQuaternion(v.spearQuat);
+    v.tipPos.copy(v.spearPos).add(v.tipOffset);
 
-    var fishTargets = Array.from(this.el.sceneEl.querySelectorAll('.fish-target'));
+    var fishTargets = this.el.sceneEl.querySelectorAll('.fish-target');
     for (var i = 0; i < fishTargets.length; i++) {
       var fish = fishTargets[i];
       if (!fish.object3D) continue;
-      var fishPos = new THREE.Vector3();
-      fish.object3D.getWorldPosition(fishPos);
-      if (tipPos.distanceTo(fishPos) < this.collisionRadius) {
+      fish.object3D.getWorldPosition(v.fishPos);
+      if (v.tipPos.distanceTo(v.fishPos) < this.collisionRadius) {
         this.processCaughtFish(fish, spear);
         return true;
       }
@@ -307,16 +323,6 @@ AFRAME.registerComponent('grab-manager', {
       if (window.gameTimer && window.gameTimer.isGameActive && window.gameTimer.isGameActive()) {
         window.gameTimer.addCaughtFish(caughtType, isCorrect, points);
       }
-
-      // Mettre à jour le score
-      try {
-        var scoreDisplay = document.querySelector('#score-display');
-        if (scoreDisplay && window.gameTimer) {
-          var count = window.gameTimer.getCaughtFishes ? window.gameTimer.getCaughtFishes().length : 0;
-          var total = window.gameTimer.getTotalScore ? window.gameTimer.getTotalScore() : 0;
-          scoreDisplay.setAttribute('value', 'Fish: ' + count + ' | Points: ' + total);
-        }
-      } catch (e) { /* ignore */ }
 
       // Si correct, passer au prochain poisson bonus
       if (isCorrect && bonusEntity) {

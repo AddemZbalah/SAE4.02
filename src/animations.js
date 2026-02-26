@@ -248,7 +248,7 @@
         el.addEventListener('mouseenter', function () { self.hoverIn(el); });
         el.addEventListener('mouseleave', function () { self.hoverOut(el); });
       });
-      console.log('GSAP button hovers setup');
+
     },
 
     setupHTMLButtonHovers: function () {
@@ -315,7 +315,7 @@
       tick: function (time) { gsap.updateRoot(time / 1000); }
     });
 
-    console.log('GSAP ticker synced with A-Frame render loop');
+
   }
 
   function setupWhenReady() {
@@ -338,5 +338,4 @@
     setupWhenReady();
   }
 
-  console.log('Animations GSAP loaded');
 })();

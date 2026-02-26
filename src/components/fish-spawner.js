@@ -47,7 +47,7 @@ AFRAME.registerComponent('fish-movement', {
 
   init: function () {
     this.velocity = new THREE.Vector3(0, 0, 0);
-    this.speed = this.data.speed * (0.001 + Math.random() * 0.0006);
+    this.speed = this.data.speed * (0.8 + Math.random() * 0.4);
     this.bounds = this.data.bounds;
     this.target = new THREE.Vector3();
     this._pickNewTarget();
@@ -55,6 +55,7 @@ AFRAME.registerComponent('fish-movement', {
     this.bobAmplitude = 0.003 + Math.random() * 0.006;
     this.bobOffset = Math.random() * Math.PI * 2;
     this._collisionCooldown = 0;
+    this._targetTimer = 3 + Math.random() * 4;
 
     this._entryMode = this.data.entryMode;
     this._entryStartTime = this._entryMode ? Date.now() : null;
@@ -73,18 +74,34 @@ AFRAME.registerComponent('fish-movement', {
     this._collisionConfig = {
       coneAngle: 175,
       dampingFactor: 0.9,
-      minReflectionSpeed: 0.000005
+      minReflectionSpeed: 0.05
+    };
+
+    // Vecteurs pré-alloués (évite le garbage collector dans tick)
+    this._v = {
+      desired: new THREE.Vector3(),
+      up: new THREE.Vector3(0, 1, 0),
+      lateral: new THREE.Vector3(),
+      nextPos: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      lookTarget: new THREE.Vector3(),
+      currentQuat: new THREE.Quaternion(),
+      targetQuat: new THREE.Quaternion(),
+      reflDir: new THREE.Vector3(),
+      reflHelper: new THREE.Vector3(),
+      reflU: new THREE.Vector3(),
+      reflV: new THREE.Vector3(),
+      reflResult: new THREE.Vector3(),
+      normal: new THREE.Vector3(),
+      local: new THREE.Vector3(),
+      localVel: new THREE.Vector3(),
+      corrected: new THREE.Vector3(),
+      worldVel: new THREE.Vector3(),
+      safeNormal: new THREE.Vector3()
     };
 
     var self = this;
     this.el.sceneEl.addEventListener('room-scanned', function (e) { self._updateZoneFromEvent(e.detail); });
-    this.el.sceneEl.addEventListener('room-reset', function () {
-      self.spawned = false;
-      if (self.fishes && self.fishes.length > 0) {
-        self.fishes.forEach(function (f) { if (f.parentNode) f.parentNode.removeChild(f); });
-        self.fishes = [];
-      }
-    });
     this.el.sceneEl.addEventListener('zone-updated', function () { self._updateZoneFromGlobal(); });
 
     if (window.FISH_ZONE.scanned) this._updateZoneFromGlobal();
@@ -121,12 +138,13 @@ AFRAME.registerComponent('fish-movement', {
   },
 
   _generateConeReflection: function (normal, speed, coneAngle, damping) {
-    var direction = normal.clone().normalize();
+    var r = this._v;
+    r.reflDir.copy(normal).normalize();
 
-    var helper = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(direction.dot(helper)) > 0.9) helper = new THREE.Vector3(1, 0, 0);
-    var u = new THREE.Vector3().crossVectors(direction, helper).normalize();
-    var v = new THREE.Vector3().crossVectors(direction, u).normalize();
+    r.reflHelper.set(0, 1, 0);
+    if (Math.abs(r.reflDir.dot(r.reflHelper)) > 0.9) r.reflHelper.set(1, 0, 0);
+    r.reflU.crossVectors(r.reflDir, r.reflHelper).normalize();
+    r.reflV.crossVectors(r.reflDir, r.reflU).normalize();
 
     var phi = Math.random() * Math.PI * 2;
     var coneRad = coneAngle * (Math.PI / 180);
@@ -134,19 +152,21 @@ AFRAME.registerComponent('fish-movement', {
     var sinTheta = Math.sin(theta);
     var cosTheta = Math.cos(theta);
 
-    var newDir = new THREE.Vector3()
-      .addScaledVector(direction, cosTheta)
-      .addScaledVector(u, sinTheta * Math.cos(phi))
-      .addScaledVector(v, sinTheta * Math.sin(phi));
-    newDir.normalize();
+    r.reflResult.set(0, 0, 0)
+      .addScaledVector(r.reflDir, cosTheta)
+      .addScaledVector(r.reflU, sinTheta * Math.cos(phi))
+      .addScaledVector(r.reflV, sinTheta * Math.sin(phi))
+      .normalize();
 
     var newSpeed = Math.max(speed * damping, this._collisionConfig.minReflectionSpeed);
-    return newDir.multiplyScalar(newSpeed);
+    r.reflResult.multiplyScalar(newSpeed);
+    return r.reflResult;
   },
 
   _pickNewTarget: function () {
     if (this.roomBounds && isFinite(this.roomBounds.minX)) {
       var margin = 0.3;
+      var pos = this.el.object3D.position;
       var minX = this.roomBounds.minX + margin;
       var maxX = this.roomBounds.maxX - margin;
       var minZ = this.roomBounds.minZ + margin;
@@ -154,13 +174,15 @@ AFRAME.registerComponent('fish-movement', {
       var minY = Math.max(this.floorY + 0.3, 0.2);
       var maxY = Math.min(this.ceilingY - 0.3, this.floorY + 2.0);
 
-      for (var attempt = 0; attempt < 10; attempt++) {
+      // Essayer de trouver une cible à au moins 1m du poisson
+      for (var attempt = 0; attempt < 15; attempt++) {
         this.target.set(
           minX + Math.random() * (maxX - minX),
           minY + Math.random() * (maxY - minY),
           minZ + Math.random() * (maxZ - minZ)
         );
-        if (!isPointInsideObstacle(this.target, this.obstacles, this.floorY)) break;
+        if (isPointInsideObstacle(this.target, this.obstacles, this.floorY)) continue;
+        if (attempt >= 12 || pos.distanceTo(this.target) > 1.0) break;
       }
     } else {
       var b = this.bounds;
@@ -184,17 +206,16 @@ AFRAME.registerComponent('fish-movement', {
   _checkFloorCeilingCollision: function (nextPos) {
     var collision = false;
     var cfg = this._collisionConfig;
+    var v = this._v;
 
     if (nextPos.y <= this.floorY + 0.2) {
-      var floorNormal = new THREE.Vector3(0, 1, 0);
-      var newVel = this._generateConeReflection(floorNormal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor);
-      this.velocity.copy(newVel);
+      v.normal.set(0, 1, 0);
+      this.velocity.copy(this._generateConeReflection(v.normal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
       nextPos.y = this.floorY + 0.25;
       collision = true;
     } else if (nextPos.y >= this.ceilingY - 0.2) {
-      var ceilNormal = new THREE.Vector3(0, -1, 0);
-      var newVel2 = this._generateConeReflection(ceilNormal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor);
-      this.velocity.copy(newVel2);
+      v.normal.set(0, -1, 0);
+      this.velocity.copy(this._generateConeReflection(v.normal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
       nextPos.y = this.ceilingY - 0.25;
       collision = true;
     }
@@ -215,17 +236,18 @@ AFRAME.registerComponent('fish-movement', {
     var box = this.orientedBox;
     var margin = 0.2;
     var cfg = this._collisionConfig;
+    var v = this._v;
 
     var localX, localZ, velLocalX, velLocalZ, cos, sin;
     if (box.inverseMatrix) {
-      var local = new THREE.Vector3(nextPos.x, nextPos.y, nextPos.z).applyMatrix4(box.inverseMatrix);
-      localX = local.x;
-      localZ = local.z;
-      var rotInv = box.inverseMatrix.clone();
-      rotInv.setPosition(0, 0, 0);
-      var localVel = new THREE.Vector3(this.velocity.x, this.velocity.y, this.velocity.z).applyMatrix4(rotInv);
-      velLocalX = localVel.x;
-      velLocalZ = localVel.z;
+      v.local.set(nextPos.x, nextPos.y, nextPos.z).applyMatrix4(box.inverseMatrix);
+      localX = v.local.x;
+      localZ = v.local.z;
+      // Rotation seule (sans translation) via éléments de matrice
+      var mi = box.inverseMatrix.elements;
+      var vx = this.velocity.x, vy = this.velocity.y, vz = this.velocity.z;
+      velLocalX = mi[0] * vx + mi[4] * vy + mi[8] * vz;
+      velLocalZ = mi[2] * vx + mi[6] * vy + mi[10] * vz;
       cos = Math.cos(box.rotationY);
       sin = Math.sin(box.rotationY);
     } else {
@@ -247,43 +269,41 @@ AFRAME.registerComponent('fish-movement', {
     var correctedLocalX = localX;
     var correctedLocalZ = localZ;
     var bounced = false;
-    var localNormal = new THREE.Vector3(0, 0, 0);
+    v.normal.set(0, 0, 0);
 
     if (localX < localMinX) {
       correctedLocalX = localMinX + 0.15;
-      localNormal.x = 1;
+      v.normal.x = 1;
       bounced = true;
     } else if (localX > localMaxX) {
       correctedLocalX = localMaxX - 0.15;
-      localNormal.x = -1;
+      v.normal.x = -1;
       bounced = true;
     }
     if (localZ < localMinZ) {
       correctedLocalZ = localMinZ + 0.15;
-      localNormal.z = 1;
+      v.normal.z = 1;
       bounced = true;
     } else if (localZ > localMaxZ) {
       correctedLocalZ = localMaxZ - 0.15;
-      localNormal.z = -1;
+      v.normal.z = -1;
       bounced = true;
     }
 
     if (bounced) {
-      localNormal.normalize();
-      var localVelVec = new THREE.Vector3(velLocalX, this.velocity.y, velLocalZ);
-      var newVel = this._generateConeReflection(localNormal, localVelVec.length(), cfg.coneAngle, cfg.dampingFactor);
+      v.normal.normalize();
+      v.localVel.set(velLocalX, this.velocity.y, velLocalZ);
+      var newVel = this._generateConeReflection(v.normal, v.localVel.length(), cfg.coneAngle, cfg.dampingFactor);
 
       if (box.matrix) {
-        var correctedLocal = new THREE.Vector3(correctedLocalX, nextPos.y, correctedLocalZ);
-        var worldCorrected = correctedLocal.applyMatrix4(box.matrix);
-        nextPos.x = worldCorrected.x;
-        nextPos.z = worldCorrected.z;
-
-        var rot = box.matrix.clone();
-        rot.setPosition(0, 0, 0);
-        var worldVel = new THREE.Vector3(newVel.x, this.velocity.y, newVel.z).applyMatrix4(rot);
-        this.velocity.x = worldVel.x;
-        this.velocity.z = worldVel.z;
+        v.corrected.set(correctedLocalX, nextPos.y, correctedLocalZ).applyMatrix4(box.matrix);
+        nextPos.x = v.corrected.x;
+        nextPos.z = v.corrected.z;
+        // Rotation seule pour la vélocité
+        var mf = box.matrix.elements;
+        var nx = newVel.x, nz = newVel.z;
+        this.velocity.x = mf[0] * nx + mf[4] * this.velocity.y + mf[8] * nz;
+        this.velocity.z = mf[2] * nx + mf[6] * this.velocity.y + mf[10] * nz;
       } else {
         nextPos.x = box.centerX + (correctedLocalX * cos - correctedLocalZ * sin);
         nextPos.z = box.centerZ + (correctedLocalX * sin + correctedLocalZ * cos);
@@ -298,31 +318,32 @@ AFRAME.registerComponent('fish-movement', {
   _checkAxisAlignedCollision: function (pos, nextPos) {
     var margin = 0.15;
     var cfg = this._collisionConfig;
-    var wallNormal = new THREE.Vector3(0, 0, 0);
+    var v = this._v;
+    v.normal.set(0, 0, 0);
     var wallHit = false;
 
     if (nextPos.x <= this.roomBounds.minX + margin) {
-      wallNormal.x = 1;
+      v.normal.x = 1;
       nextPos.x = this.roomBounds.minX + margin + 0.02;
       wallHit = true;
     } else if (nextPos.x >= this.roomBounds.maxX - margin) {
-      wallNormal.x = -1;
+      v.normal.x = -1;
       nextPos.x = this.roomBounds.maxX - margin - 0.02;
       wallHit = true;
     }
     if (nextPos.z <= this.roomBounds.minZ + margin) {
-      wallNormal.z = 1;
+      v.normal.z = 1;
       nextPos.z = this.roomBounds.minZ + margin + 0.02;
       wallHit = true;
     } else if (nextPos.z >= this.roomBounds.maxZ - margin) {
-      wallNormal.z = -1;
+      v.normal.z = -1;
       nextPos.z = this.roomBounds.maxZ - margin - 0.02;
       wallHit = true;
     }
 
     if (wallHit) {
-      wallNormal.normalize();
-      this.velocity.copy(this._generateConeReflection(wallNormal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
+      v.normal.normalize();
+      this.velocity.copy(this._generateConeReflection(v.normal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
     }
     return wallHit || this._checkFloorCeilingCollision(nextPos);
   },
@@ -333,10 +354,11 @@ AFRAME.registerComponent('fish-movement', {
     var collision = false;
     var fishRadius = 0.03;
     var cfg = this._collisionConfig;
+    var v = this._v;
 
-    this.obstacles.forEach(function (obstacle) {
-      var obsData = obstacle.data;
-      if (!obsData.position || !obsData.bounds) return;
+    for (var i = 0; i < this.obstacles.length; i++) {
+      var obsData = this.obstacles[i].data;
+      if (!obsData.position || !obsData.bounds) continue;
       var bounds = obsData.bounds;
 
       var effectiveMinY = bounds.minY;
@@ -352,43 +374,48 @@ AFRAME.registerComponent('fish-movement', {
       var inZ = nextPos.z > bounds.minZ - fishRadius && nextPos.z < bounds.maxZ + fishRadius;
 
       if (inX && inY && inZ) {
-        var pens = [
-          { axis: 'x', pen: nextPos.x - (bounds.minX - fishRadius), sign: -1 },
-          { axis: 'x', pen: (bounds.maxX + fishRadius) - nextPos.x, sign: 1 },
-          { axis: 'y', pen: nextPos.y - (effectiveMinY - fishRadius), sign: -1 },
-          { axis: 'y', pen: (effectiveMaxY + fishRadius) - nextPos.y, sign: 1 },
-          { axis: 'z', pen: nextPos.z - (bounds.minZ - fishRadius), sign: -1 },
-          { axis: 'z', pen: (bounds.maxZ + fishRadius) - nextPos.z, sign: 1 }
-        ];
-        pens.sort(function (a, b) { return a.pen - b.pen; });
-        var best = pens[0];
+        // Pénétration minimale sans allocation
+        var penXMin = nextPos.x - (bounds.minX - fishRadius);
+        var penXMax = (bounds.maxX + fishRadius) - nextPos.x;
+        var penYMin = nextPos.y - (effectiveMinY - fishRadius);
+        var penYMax = (effectiveMaxY + fishRadius) - nextPos.y;
+        var penZMin = nextPos.z - (bounds.minZ - fishRadius);
+        var penZMax = (bounds.maxZ + fishRadius) - nextPos.z;
 
-        var normal = new THREE.Vector3(0, 0, 0);
-        if (best.axis === 'x') {
-          nextPos.x = (best.sign === -1) ? bounds.minX - fishRadius - 0.15 : bounds.maxX + fishRadius + 0.15;
-          normal.x = best.sign === -1 ? -1 : 1;
-        } else if (best.axis === 'y') {
-          nextPos.y = (best.sign === -1) ? effectiveMinY - fishRadius - 0.15 : effectiveMaxY + fishRadius + 0.15;
-          normal.y = best.sign === -1 ? -1 : 1;
+        var minPen = penXMin, axis = 0, sign = -1;
+        if (penXMax < minPen) { minPen = penXMax; axis = 0; sign = 1; }
+        if (penYMin < minPen) { minPen = penYMin; axis = 1; sign = -1; }
+        if (penYMax < minPen) { minPen = penYMax; axis = 1; sign = 1; }
+        if (penZMin < minPen) { minPen = penZMin; axis = 2; sign = -1; }
+        if (penZMax < minPen) { minPen = penZMax; axis = 2; sign = 1; }
+
+        v.normal.set(0, 0, 0);
+        if (axis === 0) {
+          nextPos.x = (sign === -1) ? bounds.minX - fishRadius - 0.15 : bounds.maxX + fishRadius + 0.15;
+          v.normal.x = (sign === -1) ? -1 : 1;
+        } else if (axis === 1) {
+          nextPos.y = (sign === -1) ? effectiveMinY - fishRadius - 0.15 : effectiveMaxY + fishRadius + 0.15;
+          v.normal.y = (sign === -1) ? -1 : 1;
         } else {
-          nextPos.z = (best.sign === -1) ? bounds.minZ - fishRadius - 0.15 : bounds.maxZ + fishRadius + 0.15;
-          normal.z = best.sign === -1 ? -1 : 1;
+          nextPos.z = (sign === -1) ? bounds.minZ - fishRadius - 0.15 : bounds.maxZ + fishRadius + 0.15;
+          v.normal.z = (sign === -1) ? -1 : 1;
         }
 
-        var newVel = this._generateConeReflection(normal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor);
-        this.velocity.copy(newVel);
+        this.velocity.copy(this._generateConeReflection(v.normal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
         collision = true;
       }
-    }.bind(this));
+    }
 
     return collision;
   },
 
   _setTargetAfterBounce: function (pos) {
-    var reboundDir = this.velocity.clone().normalize();
+    var v = this._v;
+    v.dir.copy(this.velocity).normalize();
     var distToTarget = 1.5 + Math.random() * 2.0;
-    this.target.copy(pos).addScaledVector(reboundDir, distToTarget);
+    this.target.copy(pos).addScaledVector(v.dir, distToTarget);
     this._clampTargetInBounds();
+    this._targetTimer = 3 + Math.random() * 4;
   },
 
   _clampTargetInBounds: function () {
@@ -403,31 +430,31 @@ AFRAME.registerComponent('fish-movement', {
     if (!this.roomBounds || !isFinite(this.roomBounds.minX)) return;
     var safeMar = 0.1;
     var safetyBounce = false;
-    var safeNormal = new THREE.Vector3(0, 0, 0);
+    var v = this._v;
+    v.safeNormal.set(0, 0, 0);
 
-    if (pos.x < this.roomBounds.minX + safeMar) { pos.x = this.roomBounds.minX + safeMar; safeNormal.x += 1; safetyBounce = true; }
-    if (pos.x > this.roomBounds.maxX - safeMar) { pos.x = this.roomBounds.maxX - safeMar; safeNormal.x -= 1; safetyBounce = true; }
-    if (pos.y < this.floorY + 0.15) { pos.y = this.floorY + 0.15; safeNormal.y += 1; safetyBounce = true; }
-    if (pos.y > this.ceilingY - 0.15) { pos.y = this.ceilingY - 0.15; safeNormal.y -= 1; safetyBounce = true; }
-    if (pos.z < this.roomBounds.minZ + safeMar) { pos.z = this.roomBounds.minZ + safeMar; safeNormal.z += 1; safetyBounce = true; }
-    if (pos.z > this.roomBounds.maxZ - safeMar) { pos.z = this.roomBounds.maxZ - safeMar; safeNormal.z -= 1; safetyBounce = true; }
+    if (pos.x < this.roomBounds.minX + safeMar) { pos.x = this.roomBounds.minX + safeMar; v.safeNormal.x += 1; safetyBounce = true; }
+    if (pos.x > this.roomBounds.maxX - safeMar) { pos.x = this.roomBounds.maxX - safeMar; v.safeNormal.x -= 1; safetyBounce = true; }
+    if (pos.y < this.floorY + 0.15) { pos.y = this.floorY + 0.15; v.safeNormal.y += 1; safetyBounce = true; }
+    if (pos.y > this.ceilingY - 0.15) { pos.y = this.ceilingY - 0.15; v.safeNormal.y -= 1; safetyBounce = true; }
+    if (pos.z < this.roomBounds.minZ + safeMar) { pos.z = this.roomBounds.minZ + safeMar; v.safeNormal.z += 1; safetyBounce = true; }
+    if (pos.z > this.roomBounds.maxZ - safeMar) { pos.z = this.roomBounds.maxZ - safeMar; v.safeNormal.z -= 1; safetyBounce = true; }
 
     if (safetyBounce) {
-      safeNormal.normalize();
+      v.safeNormal.normalize();
       var cfg = this._collisionConfig;
-      var safeVel = this._generateConeReflection(safeNormal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor);
-      this.velocity.copy(safeVel);
-      this._collisionCooldown = 1.5;
+      this.velocity.copy(this._generateConeReflection(v.safeNormal, this.velocity.length(), cfg.coneAngle, cfg.dampingFactor));
+      this._collisionCooldown = 0.8;
       this._setTargetAfterBounce(pos);
     }
   },
 
   tick: function (time, delta) {
-    if (!delta) return;
-    if (this.el.__isGrabbed) return;
+    if (!delta || this.el.__isGrabbed) return;
 
-    var dt = delta / 1000;
+    var dt = Math.min(delta / 1000, 0.05);
     var pos = this.el.object3D.position;
+    var v = this._v;
 
     // Mode d'entrée
     if (this._entryMode) {
@@ -452,73 +479,76 @@ AFRAME.registerComponent('fish-movement', {
       if (endEntry) {
         this._entryMode = false;
         this._pickNewTarget();
+        this._targetTimer = 3 + Math.random() * 4;
       } else {
-        var safeDt = Math.min(dt, 0.05);
-        pos.addScaledVector(this.velocity, safeDt);
-        this.swayPhase += safeDt * 1.5;
-        pos.y += Math.sin(this.swayPhase * 2.0) * 0.015 * safeDt * 60;
+        pos.addScaledVector(this.velocity, dt);
+        this.swayPhase += dt * 1.5;
+        pos.y += Math.sin(this.swayPhase * 2.0) * 0.015 * dt * 60;
 
-        if (this.velocity.length() > 0.001) {
-          var dir = this.velocity.clone().normalize();
-          this.el.object3D.rotation.y = Math.atan2(dir.x, dir.z);
-          this.el.object3D.rotation.x = -Math.atan2(this.velocity.y,
-            Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z)) * 0.3;
+        if (this.velocity.lengthSq() > 0.000001) {
+          this.el.object3D.rotation.y = Math.atan2(this.velocity.x, this.velocity.z);
+          var hLen = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+          this.el.object3D.rotation.x = -Math.atan2(this.velocity.y, Math.max(hLen, 0.0001)) * 0.3;
         }
         return;
       }
     }
 
     // --- Comportement normal ---
-    if (pos.distanceTo(this.target) < 0.4) this._pickNewTarget();
+    this._targetTimer -= dt;
+    if (this._targetTimer <= 0 || pos.distanceTo(this.target) < 0.5) {
+      this._pickNewTarget();
+      this._targetTimer = 3 + Math.random() * 4;
+    }
     if (this._collisionCooldown > 0) this._collisionCooldown -= dt;
 
-    // Direction vers la cible
-    var desired = this.target.clone().sub(pos).normalize().multiplyScalar(this.speed);
-    var lerpFactor = (this._collisionCooldown > 0) ? Math.min(1, dt * 0.05) : Math.min(1, dt * 0.8);
-    this.velocity.lerp(desired, lerpFactor);
+    // Direction vers la cible (vecteurs pré-alloués)
+    v.desired.copy(this.target).sub(pos);
+    var distToTarget = v.desired.length();
+    if (distToTarget > 0.001) v.desired.divideScalar(distToTarget);
+    v.desired.multiplyScalar(this.speed);
+
+    var lerpFactor = (this._collisionCooldown > 0) ? Math.min(1, dt * 0.5) : Math.min(1, dt * 2.5);
+    this.velocity.lerp(v.desired, lerpFactor);
 
     this.swayPhase += dt * (0.35 + Math.random() * 0.2);
-    var lateral = new THREE.Vector3().crossVectors(this.velocity, new THREE.Vector3(0, 1, 0)).normalize();
-    var sway = lateral.multiplyScalar(Math.sin(this.swayPhase) * 0.01);
+    v.up.set(0, 1, 0);
+    v.lateral.crossVectors(this.velocity, v.up).normalize();
+    var swayAmount = Math.sin(this.swayPhase) * 0.01;
     var verticalBob = Math.sin(this.swayPhase * 0.6 + this.bobOffset) * this.bobAmplitude;
-    if (this.roomBounds && Math.random() < dt * 0.25) {
-      var minY = this.floorY + 0.2;
-      var maxY = this.ceilingY - 0.2;
-      this.target.y = Math.max(minY, Math.min(maxY, this.target.y + (Math.random() - 0.5) * 0.6));
-    }
 
-    // Calculer la prochaine position
-    var nextPos = pos.clone();
-    nextPos.addScaledVector(this.velocity, dt);
-    nextPos.addScaledVector(sway, 1);
-    var wallHit = this._checkWallCollision(pos, nextPos);
-    var obstacleHit = this._checkObstacleCollision(pos, nextPos);
+    // Prochaine position (vecteur pré-alloué)
+    v.nextPos.copy(pos);
+    v.nextPos.addScaledVector(this.velocity, dt);
+    v.nextPos.x += v.lateral.x * swayAmount;
+    v.nextPos.z += v.lateral.z * swayAmount;
+
+    var wallHit = this._checkWallCollision(pos, v.nextPos);
+    var obstacleHit = this._checkObstacleCollision(pos, v.nextPos);
 
     if (wallHit || obstacleHit) {
-      this._collisionCooldown = 1.5;
+      this._collisionCooldown = 0.8;
       this._setTargetAfterBounce(pos);
     }
 
-    nextPos.y += verticalBob;
-    pos.copy(nextPos);
+    v.nextPos.y += verticalBob;
+    pos.copy(v.nextPos);
     this._applySafetyBounce(pos);
 
     // Rotation douce vers la direction du mouvement
     if (this.velocity.lengthSq() > 0.0001) {
-      var maxPitch = Math.PI / 4;
-      var vel = this.velocity.clone();
-      var horizLen = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-      var safeHoriz = Math.max(horizLen, 0.0001);
-      var maxVY = Math.tan(maxPitch) * safeHoriz;
-      var clampedY = Math.max(-maxVY, Math.min(maxVY, vel.y));
-      var constrainedDir = new THREE.Vector3(vel.x, clampedY, vel.z).normalize();
-      var lookTarget = pos.clone().add(constrainedDir);
+      var horizLen2 = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+      var safeHoriz = Math.max(horizLen2, 0.0001);
+      var maxVY = safeHoriz;
+      var clampedY = Math.max(-maxVY, Math.min(maxVY, this.velocity.y));
+      v.dir.set(this.velocity.x, clampedY, this.velocity.z).normalize();
+      v.lookTarget.copy(pos).add(v.dir);
 
-      var currentQuat = this.el.object3D.quaternion.clone();
-      this.el.object3D.lookAt(lookTarget);
-      var targetQuat = this.el.object3D.quaternion.clone();
-      this.el.object3D.quaternion.copy(currentQuat);
-      this.el.object3D.quaternion.slerp(targetQuat, Math.min(1, dt * 1.6));
+      v.currentQuat.copy(this.el.object3D.quaternion);
+      this.el.object3D.lookAt(v.lookTarget);
+      v.targetQuat.copy(this.el.object3D.quaternion);
+      this.el.object3D.quaternion.copy(v.currentQuat);
+      this.el.object3D.quaternion.slerp(v.targetQuat, Math.min(1, dt * 2.0));
     }
   }
 });
@@ -602,15 +632,29 @@ AFRAME.registerComponent('fish-spawner', {
 
     // Vérifier les ouvertures disponibles
     var openings = window.FISH_ZONE.openings || [];
+    console.log('[fish-spawner] \ud83d\udeaa Ouvertures disponibles:', openings.length);
+
     if (openings.length === 0) {
-      var cx = roomData.centerX || 0;
-      var cz = roomData.centerZ || -2;
+      console.warn('[fish-spawner] ⚠️ AUCUNE ouverture détectée - Création de fallback sur chaque mur');
+      // Créer 1 ouverture au centre de chaque mur de la bounding box
+      var cx = (bounds.minX + bounds.maxX) / 2;
+      var cz = (bounds.minZ + bounds.maxZ) / 2;
+      var w = bounds.maxX - bounds.minX;
+      var d = bounds.maxZ - bounds.minZ;
+      var doorH = Math.min(height * 0.8, 2.0);
       openings = [
-        { type: 'door', position: { x: cx, y: floorY + 1.0, z: bounds.minZ }, normal: { x: 0, y: 0, z: -1 }, size: { width: 1.0, height: 2.0 }, wall: 'north' },
-        { type: 'window', position: { x: bounds.maxX, y: floorY + 1.8, z: cz }, normal: { x: 1, y: 0, z: 0 }, size: { width: 1.2, height: 1.2 }, wall: 'east' }
+        { type: 'door', position: { x: cx, y: floorY + doorH / 2, z: bounds.minZ }, normal: { x: 0, y: 0, z: -1 }, size: { width: Math.min(w * 0.3, 1.0), height: doorH }, wall: 'north' },
+        { type: 'door', position: { x: cx, y: floorY + doorH / 2, z: bounds.maxZ }, normal: { x: 0, y: 0, z: 1 }, size: { width: Math.min(w * 0.3, 1.0), height: doorH }, wall: 'south' },
+        { type: 'door', position: { x: bounds.minX, y: floorY + doorH / 2, z: cz }, normal: { x: -1, y: 0, z: 0 }, size: { width: Math.min(d * 0.3, 1.0), height: doorH }, wall: 'west' },
+        { type: 'door', position: { x: bounds.maxX, y: floorY + doorH / 2, z: cz }, normal: { x: 1, y: 0, z: 0 }, size: { width: Math.min(d * 0.3, 1.0), height: doorH }, wall: 'east' }
       ];
       window.FISH_ZONE.openings = openings;
     }
+
+    console.log('[fish-spawner] \ud83d\udc1f Spawn de', this.data.count, 'poissons via', openings.length, 'ouverture(s)');
+    openings.forEach(function (o, i) {
+      console.log('  [', i, ']', o.type, o.wall, 'pos:', o.position.x.toFixed(2), o.position.y.toFixed(2), o.position.z.toFixed(2));
+    });
 
     var scene = this.el.sceneEl;
     var parent = document.querySelector('#world-anchor') || scene;
@@ -624,75 +668,94 @@ AFRAME.registerComponent('fish-spawner', {
       { type: 'thon_bleu', model: '#thon_bleu', scaleAdjust: 4.0 }
     ];
 
-    console.log('Spawning', this.data.count, 'fish from', openings.length, 'opening(s)');
+    var self = this;
+    var staggerDelay = 800; // ms entre chaque poisson
 
     for (var i = 0; i < this.data.count; i++) {
-      var fish = document.createElement('a-entity');
+      (function (index) {
+        setTimeout(function () {
+          var fish = document.createElement('a-entity');
 
-      // Choisir un modèle aléatoire
-      var chosen = fishModels[Math.floor(Math.random() * fishModels.length)];
-      fish.setAttribute('gltf-model', chosen.model);
+          // Choisir un modèle aléatoire
+          var chosen = fishModels[Math.floor(Math.random() * fishModels.length)];
+          fish.setAttribute('gltf-model', chosen.model);
 
-      var baseScale = (0.6 + Math.random() * 0.6) / 72.0;
-      var finalScale = baseScale * chosen.scaleAdjust;
-      fish.setAttribute('scale', finalScale + ' ' + finalScale + ' ' + finalScale);
+          var baseScale = (0.6 + Math.random() * 0.6) / 72.0;
+          var finalScale = baseScale * chosen.scaleAdjust;
+          fish.setAttribute('scale', finalScale + ' ' + finalScale + ' ' + finalScale);
 
-      // Spawn depuis une ouverture aléatoire
-      var opening = openings[Math.floor(Math.random() * openings.length)];
-      var spawnData = this._computeSpawnFromOpening(opening, bounds);
+          // Spawn depuis une ouverture aléatoire
+          var opening = openings[Math.floor(Math.random() * openings.length)];
+          var spawnData = self._computeSpawnFromOpening(opening);
 
-      var vx = spawnData.velocity.x;
-      var vz = spawnData.velocity.z;
-      var ry = THREE.MathUtils.radToDeg(Math.atan2(vx, vz));
-      fish.setAttribute('rotation', '0 ' + ry + ' 0');
+          var vx = spawnData.velocity.x;
+          var vz = spawnData.velocity.z;
+          var ry = THREE.MathUtils.radToDeg(Math.atan2(vx, vz));
+          fish.setAttribute('rotation', '0 ' + ry + ' 0');
 
-      fish.setAttribute('position', spawnData.position.x + ' ' + spawnData.position.y + ' ' + spawnData.position.z);
+          fish.setAttribute('position', spawnData.position.x + ' ' + spawnData.position.y + ' ' + spawnData.position.z);
 
-      // Classes et attributs
-      fish.classList.add('fish', 'fish-target');
-      fish.setAttribute('grabbable', '');
-      fish.setAttribute('data-fish-type', chosen.type);
+          // Classes et attributs
+          fish.classList.add('fish', 'fish-target');
+          fish.setAttribute('grabbable', '');
+          fish.setAttribute('data-fish-type', chosen.type);
 
-      // Configurer le mouvement
-      var baseSpeed = 0.00001;
-      var mc = 'speed: ' + baseSpeed + '; bounds: ' + this.data.area
-        + '; entryMode: true; entryDuration: ' + spawnData.entryDuration
-        + '; initialVelocity: ' + spawnData.velocity.x + ' ' + spawnData.velocity.y + ' ' + spawnData.velocity.z;
-      fish.setAttribute('fish-movement', mc);
+          // Configurer le mouvement
+          var baseSpeed = 0.4;
+          var mc = 'speed: ' + baseSpeed + '; bounds: ' + self.data.area
+            + '; entryMode: true; entryDuration: ' + spawnData.entryDuration
+            + '; initialVelocity: ' + spawnData.velocity.x + ' ' + spawnData.velocity.y + ' ' + spawnData.velocity.z;
+          fish.setAttribute('fish-movement', mc);
 
-      parent.appendChild(fish);
-      this.fishes.push(fish);
+          parent.appendChild(fish);
+          self.fishes.push(fish);
+        }, index * staggerDelay);
+      })(i);
     }
 
-    console.log(this.fishes.length, 'fishes spawned');
     this._startFishRemainingObserver(parent);
   },
 
   /**
    * Calcule position et vélocité de spawn depuis une ouverture.
+   * Le poisson apparaît juste derrière le mur (à 0.3-0.6m) et nage à travers l'ouverture.
    */
   _computeSpawnFromOpening: function (opening) {
-    var spawnDistance = 2.0 + Math.random() * 1.5;
+    // Distance derrière le mur (très proche pour effet visuel)
+    var spawnDistance = 0.4 + Math.random() * 0.3;
     var nx = opening.normal.x;
     var nz = opening.normal.z;
+
+    // Dispersion dans le cadre de l'ouverture - STRICTE pour rester dedans
     var perpX = -nz;
     var perpZ = nx;
-    var halfW = (opening.size.width || 1.0) * 0.5 * 0.8;
+    var halfW = (opening.size.width || 1.0) * 0.15;  // 15% de la largeur max
+    var halfH = (opening.size.height || 1.0) * 0.15; // 15% de la hauteur max
     var spread = (Math.random() - 0.5) * 2.0 * halfW;
+    var ySpread = (Math.random() - 0.5) * 2.0 * halfH;
+
     var startPos = {
       x: opening.position.x + nx * spawnDistance + perpX * spread,
-      y: opening.position.y + (Math.random() - 0.5) * (opening.size.height || 1.0) * 0.4,
+      y: opening.position.y + ySpread,
       z: opening.position.z + nz * spawnDistance + perpZ * spread
     };
 
-    var speed = 0.35 + Math.random() * 0.15;
+    // Vitesse d'entrée — le poisson nage VERS l'intérieur de la pièce
+    var speed = 0.4 + Math.random() * 0.2;
+    // Angle quasi-droit pour garantir l'entrée par l'ouverture
+    var angleDeviation = (Math.random() - 0.5) * 0.1; // Très faible déviation
     var velocity = {
-      x: -nx * speed,
-      y: (Math.random() - 0.5) * speed * 0.1,
-      z: -nz * speed
+      x: -nx * speed + perpX * angleDeviation * speed,
+      y: (Math.random() - 0.5) * speed * 0.04,
+      z: -nz * speed + perpZ * angleDeviation * speed
     };
 
-    var travelTime = (spawnDistance + 2.0) / speed;
+    // Temps pour traverser l'ouverture + entrer dans la pièce (2m environ)
+    var travelTime = (spawnDistance + 2.5) / speed;
+
+    console.log('[spawn] 🐟 pos:', startPos.x.toFixed(2), startPos.y.toFixed(2), startPos.z.toFixed(2),
+      'opening:', opening.position.x.toFixed(2), opening.position.y.toFixed(2), opening.position.z.toFixed(2),
+      'normal:', nx, nz, 'spread:', spread.toFixed(2), ySpread.toFixed(2));
 
     return {
       position: startPos,

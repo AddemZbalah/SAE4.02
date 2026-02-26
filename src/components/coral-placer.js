@@ -1,12 +1,8 @@
 // Places coral models on yellow-marked visuals (tables) and on the floor inside the scanned room
 AFRAME.registerComponent('coral-placer', {
   schema: {
-    maxOnMarkers: { type: 'int', default: 3 },
-    maxOnFloor: { type: 'int', default: 5 },
-    densityFloor: { type: 'number', default: 0.45 }, // corals per m²
     scaleMin: { type: 'number', default: 0.35 },
-    scaleMax: { type: 'number', default: 0.65 },
-    floorPadding: { type: 'number', default: 0.35 }
+    scaleMax: { type: 'number', default: 0.65 }
   },
 
   init: function () {

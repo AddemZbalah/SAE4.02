@@ -47,6 +47,12 @@
       start3D.addEventListener('click', function () {
         start3D.setAttribute('visible', 'false');
         try {
+          // Réactiver les lasers au lancement du jeu
+          var rd = document.querySelector('[room-detection]');
+          if (rd && rd.components && rd.components['room-detection'] && rd.components['room-detection'].ensureLaserControlsActive) {
+            rd.components['room-detection'].ensureLaserControlsActive();
+          }
+
           var spear = document.querySelector('#spear');
           if (spear) spear.setAttribute('visible', 'true');
 

@@ -1,4 +1,4 @@
-// COMPOSANT ROOM-DETECTION : Détection de l'environnement XR
+﻿// COMPOSANT ROOM-DETECTION : Détection de l'environnement XR
 AFRAME.registerComponent('room-detection', {
   schema: {
     debug: { type: 'boolean', default: true },
@@ -47,13 +47,14 @@ AFRAME.registerComponent('room-detection', {
     this.el.sceneEl.addEventListener('exit-vr', this.onExitXR.bind(this));
 
     // Mode test : émettre des données simulées si WebXR absent
-    setTimeout(async () => {
+    let self = this;
+    setTimeout(async function () {
       try {
-        const urlParams = (typeof window !== 'undefined' && window.location && window.location.search)
+        let urlParams = (typeof window !== 'undefined' && window.location && window.location.search)
           ? new URLSearchParams(window.location.search)
           : null;
-        const allowParam = urlParams ? (urlParams.get('allowTest') === '1' || urlParams.get('allowTest') === 'true') : false;
-        const allowTest = this.data.enableTest || allowParam;
+        let allowParam = urlParams ? (urlParams.get('allowTest') === '1' || urlParams.get('allowTest') === 'true') : false;
+        let allowTest = self.data.enableTest || allowParam;
 
         if (!allowTest) return; // pas d'émission automatique de test
 
@@ -64,16 +65,16 @@ AFRAME.registerComponent('room-detection', {
         return;
       }
 
-      if (!this.xrSession && !this.xrSessionRequested && !this.scanComplete && !this.isScanning) {
+      if (!self.xrSession && !self.xrSessionRequested && !self.scanComplete && !self.isScanning) {
         console.warn('⚠️ WebXR non présent — émission de données de test pour le développement PC');
-        this.emitTestRoomData();
+        self.emitTestRoomData();
       }
     }, 8000);
   },
 
   emitTestRoomData: function () {
     this.scanComplete = true;
-    const testData = {
+    let testData = {
       bounds: {
         minX: -3, maxX: 3,
         minY: 0, maxY: 2.5,
@@ -101,7 +102,7 @@ AFRAME.registerComponent('room-detection', {
   },
 
   createSpawnZoneBoundingBox: function (data) {
-    const oldBox = document.querySelector('#spawn-zone-bounds');
+    let oldBox = document.querySelector('#spawn-zone-bounds');
     if (oldBox) oldBox.parentNode.removeChild(oldBox);
 
     // Si on a le polygone du sol, calculer les VRAIS bounds à partir des vertices transformés
@@ -114,30 +115,19 @@ AFRAME.registerComponent('room-detection', {
   },
 
   createBoxFromPolygon: function (data) {
-    const polygon = data.floorPolygon;
-    const pose = data.floorPose;
-    const height = data.height;
+    let polygon = data.floorPolygon;
+    let pose = data.floorPose;
+    let height = data.height;
 
-    // Transformer tous les vertices avec la matrice du sol
-    const matrix = new THREE.Matrix4();
+    // Matrice de transformation locale -> monde
+    let matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
-
-    // Extraire la position et rotation de la matrice
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    matrix.decompose(position, quaternion, scale);
-
-    // Convertir quaternion en angles Euler
-    const euler = new THREE.Euler();
-    euler.setFromQuaternion(quaternion);
-    const rotationY = THREE.MathUtils.radToDeg(euler.y);
 
     // Calculer les bounds dans l'espace LOCAL du plan (avant transformation)
     let localMinX = Infinity, localMaxX = -Infinity;
     let localMinZ = Infinity, localMaxZ = -Infinity;
 
-    polygon.forEach(v => {
+    polygon.forEach(function (v) {
       localMinX = Math.min(localMinX, v.x);
       localMaxX = Math.max(localMaxX, v.x);
       localMinZ = Math.min(localMinZ, v.z);
@@ -145,30 +135,42 @@ AFRAME.registerComponent('room-detection', {
     });
 
     // Dimensions dans l'espace local
-    const width = localMaxX - localMinX;
-    const depth = localMaxZ - localMinZ;
-    const localCenterX = (localMinX + localMaxX) / 2;
-    const localCenterZ = (localMinZ + localMaxZ) / 2;
+    let width = localMaxX - localMinX;
+    let depth = localMaxZ - localMinZ;
+    let localCenterX = (localMinX + localMaxX) / 2;
+    let localCenterZ = (localMinZ + localMaxZ) / 2;
 
     // Transformer le centre local en monde
-    const centerLocal = new THREE.Vector3(localCenterX, 0, localCenterZ);
-    centerLocal.applyMatrix4(matrix);
+    let centerWorld = new THREE.Vector3(localCenterX, 0, localCenterZ);
+    centerWorld.applyMatrix4(matrix);
 
-    // Calculer les bounds RÉELS en monde (pour les collisions)
+    // Calculer la rotation Y depuis les arêtes RÉELLES transformées
+    // (pas de gimbal lock comme avec Euler pour les plans horizontaux)
+    let cornerA = new THREE.Vector3(localMinX, 0, localMinZ);
+    let cornerB = new THREE.Vector3(localMaxX, 0, localMinZ);
+    cornerA.applyMatrix4(matrix);
+    cornerB.applyMatrix4(matrix);
+    // Direction de l'arête "width" dans le monde (projection XZ)
+    let edgeDx = cornerB.x - cornerA.x;
+    let edgeDz = cornerB.z - cornerA.z;
+    // A-Frame: rotation Y de θ° → local X pointe vers (cosθ, 0, -sinθ)
+    let rotationYDeg = THREE.MathUtils.radToDeg(Math.atan2(-edgeDz, edgeDx));
+    let rotationYRad = Math.atan2(-edgeDz, edgeDx);
+
+    // Calculer les bounds RÉELS en monde (AABB pour collisions rapides)
     let realMinX = Infinity, realMaxX = -Infinity;
     let realMinZ = Infinity, realMaxZ = -Infinity;
 
-    polygon.forEach(v => {
-      const vec = new THREE.Vector3(v.x, v.y, v.z);
+    polygon.forEach(function (v) {
+      let vec = new THREE.Vector3(v.x, v.y, v.z);
       vec.applyMatrix4(matrix);
-
       realMinX = Math.min(realMinX, vec.x);
       realMaxX = Math.max(realMaxX, vec.x);
       realMinZ = Math.min(realMinZ, vec.z);
       realMaxZ = Math.max(realMaxZ, vec.z);
     });
 
-    // Mettre à jour les bounds ET infos de la box orientée pour les poissons
+    // AABB bounds (pour collisions rapides)
     data.bounds = {
       minX: realMinX,
       maxX: realMaxX,
@@ -176,16 +178,15 @@ AFRAME.registerComponent('room-detection', {
       maxZ: realMaxZ
     };
 
-    // Infos de la box orientée pour collisions précises
+    // Box orientée (pour collisions précises des poissons)
     data.orientedBox = {
-      centerX: centerLocal.x,
-      centerZ: centerLocal.z,
+      centerX: centerWorld.x,
+      centerZ: centerWorld.z,
       width: width,
       depth: depth,
-      rotationY: rotationY * Math.PI / 180, // En radians
+      rotationY: rotationYRad,
       halfWidth: width / 2,
       halfDepth: depth / 2,
-      // Bounds locaux EXACTS (le polygone n'est pas forcément centré à l'origine locale)
       localMinX: localMinX,
       localMaxX: localMaxX,
       localMinZ: localMinZ,
@@ -196,45 +197,36 @@ AFRAME.registerComponent('room-detection', {
     data.orientedBox.matrix = matrix.clone();
     data.orientedBox.inverseMatrix = new THREE.Matrix4().copy(matrix).invert();
 
-    // Créer la box rouge ORIENTÉE comme le sol réel
-    const box = document.createElement('a-box');
+    // Créer la box rouge ORIENTÉE
+    let box = document.createElement('a-box');
     box.setAttribute('id', 'spawn-zone-bounds');
-    box.setAttribute('position', `${centerLocal.x} ${data.floorY + height / 2} ${centerLocal.z}`);
-    box.setAttribute('rotation', `0 ${rotationY} 0`);
+    box.setAttribute('position', centerWorld.x + ' ' + (data.floorY + height / 2) + ' ' + centerWorld.z);
+    box.setAttribute('rotation', '0 ' + rotationYDeg + ' 0');
     box.setAttribute('width', width);
     box.setAttribute('height', height);
     box.setAttribute('depth', depth);
     box.setAttribute('material', 'color: #ff0000; opacity: 0.12; transparent: true; wireframe: true; side: double');
     box.setAttribute('geometry', 'primitive: box');
 
-    this.el.sceneEl.appendChild(box);
-  },
+    console.log('[box-spawn]', 'center:', centerWorld.x.toFixed(2), centerWorld.z.toFixed(2),
+      'rotY:', rotationYDeg.toFixed(1) + '°',
+      'size:', width.toFixed(2), 'x', depth.toFixed(2),
+      'edge dir:', edgeDx.toFixed(3), edgeDz.toFixed(3));
 
-  drawPolygonLoop: function (points, container, color, opacity) {
-    const closedPoints = [...points, points[0]];
-    const lineGeom = new THREE.BufferGeometry().setFromPoints(closedPoints);
-    const lineMat = new THREE.LineBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: opacity,
-      linewidth: 3
-    });
-    const line = new THREE.Line(lineGeom, lineMat);
-    this.el.sceneEl.object3D.add(line);
-    this.planeMeshes.push(line);
+    this.el.sceneEl.appendChild(box);
   },
 
   createStandardBox: function (data) {
     // Box rectangulaire (MÊME ZONE que pour les collisions des poissons)
-    const bounds = data.bounds || {};
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerZ = (bounds.minZ + bounds.maxZ) / 2;
-    const width = bounds.maxX - bounds.minX;
-    const depth = bounds.maxZ - bounds.minZ;
+    let bounds = data.bounds || {};
+    let centerX = (bounds.minX + bounds.maxX) / 2;
+    let centerZ = (bounds.minZ + bounds.maxZ) / 2;
+    let width = bounds.maxX - bounds.minX;
+    let depth = bounds.maxZ - bounds.minZ;
 
-    const box = document.createElement('a-box');
+    let box = document.createElement('a-box');
     box.setAttribute('id', 'spawn-zone-bounds');
-    box.setAttribute('position', `${centerX} ${data.floorY + data.height / 2} ${centerZ}`);
+    box.setAttribute('position', centerX + ' ' + (data.floorY + data.height / 2) + ' ' + centerZ);
     box.setAttribute('width', width);
     box.setAttribute('height', data.height);
     box.setAttribute('depth', depth);
@@ -251,7 +243,7 @@ AFRAME.registerComponent('room-detection', {
     this.scanPanel.setAttribute('visible', 'false');
 
     // Fond du panneau
-    const background = document.createElement('a-plane');
+    let background = document.createElement('a-plane');
     background.setAttribute('width', '1.4');
     background.setAttribute('height', '0.7');
     background.setAttribute('color', '#000');
@@ -287,7 +279,7 @@ AFRAME.registerComponent('room-detection', {
     this.scanPanel.appendChild(this.surfaceCount);
 
     // Fond barre de progression
-    const progressBg = document.createElement('a-plane');
+    let progressBg = document.createElement('a-plane');
     progressBg.setAttribute('width', '1.1');
     progressBg.setAttribute('height', '0.05');
     progressBg.setAttribute('color', '#333');
@@ -305,21 +297,15 @@ AFRAME.registerComponent('room-detection', {
     this.el.sceneEl.appendChild(this.scanPanel);
   },
 
-  ensureLaserControlsActive: function () {
-    setTimeout(() => {
-      ['#leftHand', '#rightHand'].forEach(sel => {
-        var hand = document.querySelector(sel);
-        if (!hand) return;
-        var lc = hand.components['laser-controls'];
-        var rc = hand.components['raycaster'];
-        if (lc) { lc.pause(); lc.play(); }
-        if (rc) rc.refreshObjects();
-      });
-    }, 500);
-  },
-
   onEnterXR: function () {
     this.xrSessionRequested = true;
+    console.log('[laser] 🎮 Entrée en XR détectée');
+
+    // Réactiver les lasers avec un délai simple
+    let self = this;
+    setTimeout(function () {
+      self.ensureLaserControlsActive();
+    }, 2000);
 
     if (this.scanComplete) {
       this.initializeXRSession(true);
@@ -357,14 +343,16 @@ AFRAME.registerComponent('room-detection', {
       this.el.sceneEl.emit('room-reset');
     } catch (e) { /* ignore */ }
 
-    setTimeout(() => {
-      this.initializeXRSession(false);
+    setTimeout(function () {
+      self.initializeXRSession(false);
     }, 1000);
   },
 
-  initializeXRSession: async function (resumeMode = false) {
-    const renderer = this.el.sceneEl.renderer;
-    if (!renderer?.xr) {
+  initializeXRSession: async function (resumeMode) {
+    if (resumeMode === undefined) resumeMode = false;
+    let self = this;
+    let renderer = this.el.sceneEl.renderer;
+    if (!renderer || !renderer.xr) {
       console.warn('❌ Renderer XR non disponible');
       return;
     }
@@ -377,15 +365,15 @@ AFRAME.registerComponent('room-detection', {
       if (this._refSpaceResetHandler && this._prevXrRefSpace) {
         try { this._prevXrRefSpace.removeEventListener('reset', this._refSpaceResetHandler); } catch (e) { /* ignore */ }
       }
-      this._refSpaceResetHandler = (event) => {
-        var upToDateRefSpace = this.el.sceneEl.renderer.xr.getReferenceSpace();
-        if (upToDateRefSpace) this.xrRefSpace = upToDateRefSpace;
+      this._refSpaceResetHandler = function (event) {
+        let upToDateRefSpace = self.el.sceneEl.renderer.xr.getReferenceSpace();
+        if (upToDateRefSpace) self.xrRefSpace = upToDateRefSpace;
 
-        if (this.scanComplete) {
-          this._resetDeltaMatrix = event.transform
+        if (self.scanComplete) {
+          self._resetDeltaMatrix = event.transform
             ? new THREE.Matrix4().fromArray(event.transform.matrix)
             : null;
-          this._pendingVisualRebuild = true;
+          self._pendingVisualRebuild = true;
         }
       };
       this._prevXrRefSpace = this.xrRefSpace;
@@ -396,7 +384,7 @@ AFRAME.registerComponent('room-detection', {
 
     // Hit-test source
     try {
-      const viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
+      let viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
       this.hitTestSource = await this.xrSession.requestHitTestSource({ space: viewerSpace });
     } catch (error) {
       console.warn('Hit-test viewer non disponible:', error.message);
@@ -414,7 +402,7 @@ AFRAME.registerComponent('room-detection', {
     this.cursorEl.setAttribute('id', 'scan-cursor');
 
     // Anneau externe
-    const ring1 = document.createElement('a-ring');
+    let ring1 = document.createElement('a-ring');
     ring1.setAttribute('radius-inner', '0.04');
     ring1.setAttribute('radius-outer', '0.06');
     ring1.setAttribute('color', '#00ff00');
@@ -423,7 +411,7 @@ AFRAME.registerComponent('room-detection', {
     this.cursorEl.appendChild(ring1);
 
     // Anneau interne
-    const ring2 = document.createElement('a-ring');
+    let ring2 = document.createElement('a-ring');
     ring2.setAttribute('radius-inner', '0.01');
     ring2.setAttribute('radius-outer', '0.02');
     ring2.setAttribute('color', '#ffffff');
@@ -442,8 +430,9 @@ AFRAME.registerComponent('room-detection', {
     this.scanStartTime = Date.now();
     this.scanPanel.setAttribute('visible', 'true');
 
-    setTimeout(() => {
-      if (this.isScanning) this.finishScan();
+    let self = this;
+    setTimeout(function () {
+      if (self.isScanning) self.finishScan();
     }, this.data.scanDuration);
   },
 
@@ -484,20 +473,20 @@ AFRAME.registerComponent('room-detection', {
     if (!this.isScanning || !this.xrSession || !this.xrRefSpace) return;
 
     // Barre de progression
-    var elapsed = Date.now() - this.scanStartTime;
-    var progress = Math.min(elapsed / this.data.scanDuration, 1);
-    var width = 1.1 * progress;
+    let elapsed = Date.now() - this.scanStartTime;
+    let progress = Math.min(elapsed / this.data.scanDuration, 1);
+    let width = 1.1 * progress;
     this.progressBar.setAttribute('width', Math.max(0.01, width));
-    this.progressBar.setAttribute('position', `${-0.55 + width / 2} -0.26 0.02`);
+    this.progressBar.setAttribute('position', (-0.55 + width / 2) + ' -0.26 0.02');
 
     this.detectPlanes();
     this.performHitTest();
   },
 
   performHitTest: function () {
-    var renderer = this.el.sceneEl.renderer;
+    let renderer = this.el.sceneEl.renderer;
     if (!renderer?.xr) return;
-    var frame = renderer.xr.getFrame();
+    let frame = renderer.xr.getFrame();
     if (!frame) return;
 
     if (!this.controllerHitTestSource && this.xrSession) this.trySetupControllerHitTest(frame);
@@ -509,13 +498,14 @@ AFRAME.registerComponent('room-detection', {
     if (this.controllerHitTestRequested || !this.xrSession) return;
 
     try {
-      var inputSources = this.xrSession.inputSources;
-      for (var inputSource of inputSources) {
+      let inputSources = this.xrSession.inputSources;
+      for (let inputSource of inputSources) {
         if (inputSource.handedness === 'right' && inputSource.targetRaySpace) {
           this.controllerHitTestRequested = true;
+          let self = this;
           this.xrSession.requestHitTestSource({ space: inputSource.targetRaySpace })
-            .then((source) => { this.controllerHitTestSource = source; })
-            .catch(() => { });
+            .then(function (source) { self.controllerHitTestSource = source; })
+            .catch(function () { });
           break;
         }
       }
@@ -526,15 +516,15 @@ AFRAME.registerComponent('room-detection', {
     if (!hitTestSource) return;
 
     try {
-      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      let hitTestResults = frame.getHitTestResults(hitTestSource);
 
       if (hitTestResults.length > 0) {
-        const hit = hitTestResults[0];  // Prendre le premier résultat (plus proche)
-        const hitPose = hit.getPose(this.xrRefSpace);
+        let hit = hitTestResults[0];  // Prendre le premier résultat (plus proche)
+        let hitPose = hit.getPose(this.xrRefSpace);
 
         if (hitPose) {
-          const pos = hitPose.transform.position;
-          const orient = hitPose.transform.orientation;
+          let pos = hitPose.transform.position;
+          let orient = hitPose.transform.orientation;
 
           // Mettre à jour le curseur visuel pour le viewer (style professeur)
           if (sourceType === 'viewer' && this.cursorEl && this.isScanning) {
@@ -543,20 +533,20 @@ AFRAME.registerComponent('room-detection', {
             this.cursorEl.object3D.quaternion.set(orient.x, orient.y, orient.z, orient.w);
 
             // Couleur selon la hauteur (comme le professeur)
-            const rings = this.cursorEl.querySelectorAll('a-ring');
+            let rings = this.cursorEl.querySelectorAll('a-ring');
             if (pos.y > 0.55 && pos.y <= 1.0) {
-              rings.forEach(r => r.setAttribute('color', '#ff8800')); // Table probable
+              rings.forEach(function (r) { r.setAttribute('color', '#ff8800'); }); // Table probable
             } else if (pos.y < 0.25) {
-              rings.forEach(r => r.setAttribute('color', '#00ff00')); // Sol
+              rings.forEach(function (r) { r.setAttribute('color', '#00ff00'); }); // Sol
             } else {
-              rings.forEach(r => r.setAttribute('color', '#00ffff')); // Autre
+              rings.forEach(function (r) { r.setAttribute('color', '#00ffff'); }); // Autre
             }
           }
 
           // Pour le contrôleur, appliquer le filtrage du professeur
           if (sourceType === 'controller' && this.xrSession) {
             // Vérifier la distance comme le professeur le fait (éviter la main)
-            const inputSources = this.xrSession.inputSources;
+            let inputSources = this.xrSession.inputSources;
             let rightController = null;
 
             for (let inputSource of inputSources) {
@@ -567,12 +557,12 @@ AFRAME.registerComponent('room-detection', {
             }
 
             if (rightController && rightController.targetRaySpace) {
-              const controllerPose = frame.getPose(rightController.targetRaySpace, this.xrRefSpace);
+              let controllerPose = frame.getPose(rightController.targetRaySpace, this.xrRefSpace);
               if (controllerPose) {
-                const dx = pos.x - controllerPose.transform.position.x;
-                const dy = pos.y - controllerPose.transform.position.y;
-                const dz = pos.z - controllerPose.transform.position.z;
-                const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                let dx = pos.x - controllerPose.transform.position.x;
+                let dy = pos.y - controllerPose.transform.position.y;
+                let dz = pos.z - controllerPose.transform.position.z;
+                let distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
                 // N'accepter que si distance > 0.5m (méthode du professeur)
                 if (distance <= 0.5) {
@@ -584,8 +574,8 @@ AFRAME.registerComponent('room-detection', {
           }
 
           // Grille pour éviter les doublons
-          const gridSize = sourceType === 'controller' ? 20 : 10;
-          const key = `${sourceType}_${Math.round(pos.x * gridSize)}_${Math.round(pos.y * gridSize)}_${Math.round(pos.z * gridSize)}`;
+          let gridSize = sourceType === 'controller' ? 20 : 10;
+          let key = sourceType + '_' + Math.round(pos.x * gridSize) + '_' + Math.round(pos.y * gridSize) + '_' + Math.round(pos.z * gridSize);
 
           // Enregistrer la surface si nouvelle
           if (!this.hitSurfaces.has(key)) {
@@ -614,35 +604,40 @@ AFRAME.registerComponent('room-detection', {
   },
 
   detectPlanes: function () {
-    const renderer = this.el.sceneEl.renderer;
-    if (!renderer?.xr) return;
+    let self = this;
+    let renderer = this.el.sceneEl.renderer;
+    if (!renderer || !renderer.xr) return;
 
-    const frame = renderer.xr.getFrame();
+    // Toujours réactualiser le reference space depuis le renderer
+    let currentRefSpace = renderer.xr.getReferenceSpace();
+    if (currentRefSpace) this.xrRefSpace = currentRefSpace;
+
+    let frame = renderer.xr.getFrame();
     if (!frame) return;
 
     // Vérifier si la détection de plans est disponible
     if (!frame.detectedPlanes) return;
 
-    const detectedPlanes = frame.detectedPlanes;
+    let detectedPlanes = frame.detectedPlanes;
     let newPlanesCount = 0;
 
-    detectedPlanes.forEach((plane) => {
+    detectedPlanes.forEach(function (plane) {
       // Ignorer les plans déjà traités
-      if (this.detectedPlanes.has(plane)) return;
+      if (self.detectedPlanes.has(plane)) return;
 
-      const planePose = frame.getPose(plane.planeSpace, this.xrRefSpace);
+      let planePose = frame.getPose(plane.planeSpace, self.xrRefSpace);
       if (!planePose) return;
 
-      const position = planePose.transform.position;
-      const orientation = planePose.transform.orientation;
-      const polygon = plane.polygon;
+      let position = planePose.transform.position;
+      let orientation = planePose.transform.orientation;
+      let polygon = plane.polygon;
 
       if (!polygon || polygon.length < 3) return;
 
       newPlanesCount++;
 
       // Stocker le plan
-      const planeData = {
+      let planeData = {
         position: { x: position.x, y: position.y, z: position.z },
         orientation: { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w },
         polygon: polygon,
@@ -651,21 +646,21 @@ AFRAME.registerComponent('room-detection', {
       };
       // Flag pour éviter de recréer plusieurs fois la même visualisation
       planeData._visualCreated = false;
-      this.detectedPlanes.set(plane, planeData);
+      self.detectedPlanes.set(plane, planeData);
 
       // Classifier le plan selon son orientation et sa hauteur
-      this.classifyPlane(plane, planeData);
+      self.classifyPlane(plane, planeData);
 
       // Mettre à jour les bounds avec la pose complète
-      this.updateBoundsFromPolygon(planePose, polygon);
+      self.updateBoundsFromPolygon(planePose, polygon);
 
       // Créer la visualisation
-      if (this.data.showPlanes) {
-        this.createPlaneVisual(plane, planeData);
+      if (self.data.showPlanes) {
+        self.createPlaneVisual(plane, planeData);
       }
 
-      if (this.data.debug) {
-        console.log(`📋 ${plane.orientation} détecté: y=${position.y.toFixed(2)}m, vertices=${polygon.length}`);
+      if (self.data.debug) {
+        console.log('📋 ' + plane.orientation + ' détecté: y=' + position.y.toFixed(2) + 'm, vertices=' + polygon.length);
       }
     });
 
@@ -680,12 +675,12 @@ AFRAME.registerComponent('room-detection', {
     planeData.semanticLabel = plane.semanticLabel || null;
 
     // Approche du professeur : classification robuste basée sur la pose réelle
-    const pose = planeData.pose;
-    const matrix = new THREE.Matrix4();
+    let pose = planeData.pose;
+    let matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
 
     // Transformer tous les vertices pour avoir les vraies coordonnées
-    const polygon = planeData.polygon;
+    let polygon = planeData.polygon;
     let avgY = planeData.position.y;
     let minX = Infinity, maxX = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
@@ -693,8 +688,8 @@ AFRAME.registerComponent('room-detection', {
 
     if (polygon && polygon.length > 0) {
       let sumY = 0;
-      polygon.forEach(v => {
-        const vec = new THREE.Vector3(v.x, v.y, v.z);
+      polygon.forEach(function (v) {
+        let vec = new THREE.Vector3(v.x, v.y, v.z);
         vec.applyMatrix4(matrix);
         sumY += vec.y;
         minX = Math.min(minX, vec.x);
@@ -707,10 +702,10 @@ AFRAME.registerComponent('room-detection', {
       avgY = sumY / polygon.length;
     }
 
-    var planeWidth = maxX - minX;
-    var planeDepth = maxZ - minZ;
-    var planeArea = planeWidth * planeDepth;
-    var heightVariance = maxY - minY;
+    let planeWidth = maxX - minX;
+    let planeDepth = maxZ - minZ;
+    let planeArea = planeWidth * planeDepth;
+    let heightVariance = maxY - minY;
 
     // Stocker les infos
     planeData.worldY = avgY;
@@ -724,13 +719,13 @@ AFRAME.registerComponent('room-detection', {
         this.floorPlanes.push({ plane, data: planeData });
         this.floorY = Math.max(this.floorY, avgY);
         if (this.data.debug) {
-          console.log(`🟢 SOL: y=${avgY.toFixed(2)}m, size=${planeArea.toFixed(2)}m²`);
+          console.log('🟢 SOL: y=' + avgY.toFixed(2) + 'm, size=' + planeArea.toFixed(2) + 'm²');
         }
       } else if (avgY > 2.0) {
         // PLAFOND - hauteur haute
         this.ceilingPlanes.push({ plane, data: planeData });
         if (this.data.debug) {
-          console.log(`🔵 PLAFOND: y=${avgY.toFixed(2)}m`);
+          console.log('🔵 PLAFOND: y=' + avgY.toFixed(2) + 'm');
         }
       } else {
         // OBSTACLE (tables, meubles) - hauteur intermédiaire
@@ -738,14 +733,14 @@ AFRAME.registerComponent('room-detection', {
 
         // DÉTECTION AMÉLIORÉE DES TABLES
         // Critères : hauteur + aire + surface plate
-        const isTableHeight = avgY >= 0.50 && avgY <= 1.1;
-        const isTableSize = planeArea >= 0.12;  // Réduit de 0.2 à 0.12
-        const isFlat = heightVariance < 0.15;   // Surface plate
+        let isTableHeight = avgY >= 0.50 && avgY <= 1.1;
+        let isTableSize = planeArea >= 0.12;  // Réduit de 0.2 à 0.12
+        let isFlat = heightVariance < 0.15;   // Surface plate
 
         if (isTableHeight && isTableSize && isFlat) {
           type = 'table';
           if (this.data.debug) {
-            console.log(`🟡 TABLE DÉTECTÉE: y=${avgY.toFixed(2)}m, ${planeWidth.toFixed(2)}x${planeDepth.toFixed(2)}m, area=${planeArea.toFixed(2)}m²`);
+            console.log('🟡 TABLE DÉTECTÉE: y=' + avgY.toFixed(2) + 'm, ' + planeWidth.toFixed(2) + 'x' + planeDepth.toFixed(2) + 'm, area=' + planeArea.toFixed(2) + 'm²');
           }
         }
         // Sous-classification pour les autres obstacles
@@ -761,117 +756,126 @@ AFRAME.registerComponent('room-detection', {
         this.obstaclePlanes.push({ plane, data: planeData });
 
         if (this.data.debug && type !== 'table') {
-          console.log(`🟠 ${type.toUpperCase()}: y=${avgY.toFixed(2)}m, ${planeWidth.toFixed(2)}x${planeDepth.toFixed(2)}m`);
+          console.log('🟠 ' + type.toUpperCase() + ': y=' + avgY.toFixed(2) + 'm, ' + planeWidth.toFixed(2) + 'x' + planeDepth.toFixed(2) + 'm');
         }
       }
     } else if (plane.orientation === 'vertical') {
       // MUR
       this.wallPlanes.push({ plane, data: planeData });
       if (this.data.debug) {
-        console.log(`🔷 MUR: pos=(${planeData.position.x.toFixed(2)}, ${planeData.position.z.toFixed(2)})`);
+        console.log('🔷 MUR: pos=(' + planeData.position.x.toFixed(2) + ', ' + planeData.position.z.toFixed(2) + ')');
       }
     }
   },
 
   updateBoundsFromPolygon: function (pose, polygon) {
-    var matrix = new THREE.Matrix4();
+    let self = this;
+    let matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
 
-    polygon.forEach(vertex => {
-      var worldPos = new THREE.Vector3(vertex.x, vertex.y, vertex.z);
+    polygon.forEach(function (vertex) {
+      let worldPos = new THREE.Vector3(vertex.x, vertex.y, vertex.z);
       worldPos.applyMatrix4(matrix);
 
-      this.roomBounds.minX = Math.min(this.roomBounds.minX, worldPos.x);
-      this.roomBounds.maxX = Math.max(this.roomBounds.maxX, worldPos.x);
-      this.roomBounds.minY = Math.min(this.roomBounds.minY, worldPos.y);
-      this.roomBounds.maxY = Math.max(this.roomBounds.maxY, worldPos.y);
-      this.roomBounds.minZ = Math.min(this.roomBounds.minZ, worldPos.z);
-      this.roomBounds.maxZ = Math.max(this.roomBounds.maxZ, worldPos.z);
+      self.roomBounds.minX = Math.min(self.roomBounds.minX, worldPos.x);
+      self.roomBounds.maxX = Math.max(self.roomBounds.maxX, worldPos.x);
+      self.roomBounds.minY = Math.min(self.roomBounds.minY, worldPos.y);
+      self.roomBounds.maxY = Math.max(self.roomBounds.maxY, worldPos.y);
+      self.roomBounds.minZ = Math.min(self.roomBounds.minZ, worldPos.z);
+      self.roomBounds.maxZ = Math.max(self.roomBounds.maxZ, worldPos.z);
     });
   },
 
   createPlaneVisual: function (plane, planeData) {
-    var polygon = planeData.polygon;
-    var pose = planeData.pose;
+    let polygon = planeData.polygon;
+    let pose = planeData.pose;
     if (!polygon || polygon.length < 3 || planeData._visualCreated) return;
 
-    var matrix = new THREE.Matrix4();
+    let matrix = new THREE.Matrix4();
     matrix.fromArray(pose.transform.matrix);
-    var centerWorld = new THREE.Vector3(0, 0, 0).applyMatrix4(matrix);
-    var isTable = plane.orientation === 'horizontal' && planeData.obstacleType === 'table';
+    let centerWorld = new THREE.Vector3(0, 0, 0).applyMatrix4(matrix);
+
+    console.log('[plane-visual]', plane.orientation,
+      'world:', centerWorld.x.toFixed(2), centerWorld.y.toFixed(2), centerWorld.z.toFixed(2),
+      'det:', matrix.determinant().toFixed(4),
+      'label:', planeData.semanticLabel || plane.semanticLabel || '-');
+
+    let isTable = plane.orientation === 'horizontal' && planeData.obstacleType === 'table';
 
     if (isTable) this.createTableVisual(polygon, matrix, planeData);
     else this.createStandardPlaneVisual(polygon, matrix, planeData, plane, centerWorld);
   },
 
   createTableVisual: function (polygon, matrix, planeData) {
-    var points = polygon.map(v => new THREE.Vector3(v.x, v.y, v.z));
-    var lineGeometry = new THREE.BufferGeometry();
+    // Contour jaune (vertices directs du polygone)
+    let points = polygon.map(function (v) { return new THREE.Vector3(v.x, v.y, v.z); });
+    let lineGeometry = new THREE.BufferGeometry();
     lineGeometry.setFromPoints([...points, points[0]]);
 
-    // Matériau pour le contour (JAUNE BRILLANT pour les tables)
-    const lineMaterial = new THREE.LineBasicMaterial({
-      color: 0xffdd00,  // Jaune vif
+    let lineMaterial = new THREE.LineBasicMaterial({
+      color: 0xffdd00,
       transparent: true,
       opacity: 1.0,
       linewidth: 5,
       fog: false
     });
 
-    const lineSegments = new THREE.Line(lineGeometry, lineMaterial);
+    let lineSegments = new THREE.Line(lineGeometry, lineMaterial);
     lineSegments.matrixAutoUpdate = false;
     lineSegments.matrix.copy(matrix);
 
     this.el.sceneEl.object3D.add(lineSegments);
     this.planeMeshes.push(lineSegments);
 
-    // Créer aussi une version transparente remplie JAUNE pour bien voir la surface
-    const shape = new THREE.Shape();
-    shape.moveTo(polygon[0].x, polygon[0].z);
-    for (let i = 1; i < polygon.length; i++) {
-      shape.lineTo(polygon[i].x, polygon[i].z);
+    // Surface remplie - géométrie directe depuis les vertices (plus de ShapeGeometry/rotateX)
+    let fillVerts = [];
+    for (let i = 1; i < polygon.length - 1; i++) {
+      fillVerts.push(polygon[0].x, polygon[0].y, polygon[0].z);
+      fillVerts.push(polygon[i].x, polygon[i].y, polygon[i].z);
+      fillVerts.push(polygon[i + 1].x, polygon[i + 1].y, polygon[i + 1].z);
     }
-    shape.closePath();
+    let geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(fillVerts, 3));
+    geometry.computeVertexNormals();
 
-    const geometry = new THREE.ShapeGeometry(shape);
-    geometry.rotateX(-Math.PI / 2);
-
-    const material = new THREE.MeshBasicMaterial({
-      color: 0xffdd00,  // Jaune
+    let material = new THREE.MeshBasicMaterial({
+      color: 0xffdd00,
       transparent: true,
       opacity: 0.3,
       side: THREE.DoubleSide,
       depthWrite: false
     });
 
-    const mesh = new THREE.Mesh(geometry, material);
+    let mesh = new THREE.Mesh(geometry, material);
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(matrix);
 
     this.el.sceneEl.object3D.add(mesh);
     this.planeMeshes.push(mesh);
-    // Marquer la visualisation comme créée pour ce plane
     planeData._visualCreated = true;
   },
 
   createStandardPlaneVisual: function (polygon, matrix, planeData, plane, centerWorld) {
-    var shape = new THREE.Shape();
-    shape.moveTo(polygon[0].x, polygon[0].z);
-    for (var i = 1; i < polygon.length; i++) shape.lineTo(polygon[i].x, polygon[i].z);
-    shape.closePath();
-
-    var geometry = new THREE.ShapeGeometry(shape);
-    geometry.rotateX(-Math.PI / 2);
+    // Géométrie directe depuis les vertices du polygone (plus de ShapeGeometry/rotateX)
+    let fillVerts = [];
+    for (let i = 1; i < polygon.length - 1; i++) {
+      fillVerts.push(polygon[0].x, polygon[0].y, polygon[0].z);
+      fillVerts.push(polygon[i].x, polygon[i].y, polygon[i].z);
+      fillVerts.push(polygon[i + 1].x, polygon[i + 1].y, polygon[i + 1].z);
+    }
+    let geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(fillVerts, 3));
+    geometry.computeVertexNormals();
 
     // Couleur selon le type
-    var color = 0x0088ff, opacity = 0.25;
+    let color = 0x0088ff, opacity = 0.25;
     if (plane.orientation === 'horizontal') {
       if (centerWorld.y < 0.25) { color = 0x00ff00; opacity = 0.35; }
       else if (centerWorld.y > 2.2) { color = 0x00ffff; opacity = 0.2; }
       else { color = 0xff8800; opacity = 0.4; }
     }
 
-    const material = new THREE.MeshBasicMaterial({
+    let material = new THREE.MeshBasicMaterial({
       color: color,
       transparent: true,
       opacity: opacity,
@@ -879,59 +883,57 @@ AFRAME.registerComponent('room-detection', {
       depthWrite: false
     });
 
-    const mesh = new THREE.Mesh(geometry, material);
-
-    // Appliquer directement la matrice de transformation de la pose
-    // Cela positionne et oriente correctement le mesh dans l'espace monde
+    let mesh = new THREE.Mesh(geometry, material);
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(matrix);
 
-    // Ajouter un contour plus épais pour mieux voir
-    const edges = new THREE.EdgesGeometry(geometry);
-    const lineMaterial = new THREE.LineBasicMaterial({
-      color: 0xffffff, // Contour blanc pour meilleure visibilité
+    // Contour direct (line loop depuis les vertices du polygone)
+    let linePoints = polygon.map(function (v) { return new THREE.Vector3(v.x, v.y, v.z); });
+    linePoints.push(linePoints[0].clone());
+    let lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints);
+    let lineMaterial = new THREE.LineBasicMaterial({
+      color: 0xffffff,
       transparent: true,
       opacity: 0.9,
       linewidth: 2
     });
-    const wireframe = new THREE.LineSegments(edges, lineMaterial);
-    wireframe.matrixAutoUpdate = false;
-    wireframe.matrix.copy(matrix);
+    let outline = new THREE.Line(lineGeom, lineMaterial);
+    outline.matrixAutoUpdate = false;
+    outline.matrix.copy(matrix);
 
     this.el.sceneEl.object3D.add(mesh);
-    this.el.sceneEl.object3D.add(wireframe);
-    this.planeMeshes.push(mesh, wireframe);
-    // Marquer la visualisation comme créée pour ce plane
+    this.el.sceneEl.object3D.add(outline);
+    this.planeMeshes.push(mesh, outline);
     planeData._visualCreated = true;
   },
 
   updateScanUI: function () {
-    const floorCount = this.floorPlanes.length;
-    const wallCount = this.wallPlanes.length;
-    const obstacleCount = this.obstaclePlanes.length;
-    const hitSurfaceCount = this.hitSurfaces.size;
-    const total = floorCount + wallCount + obstacleCount + this.ceilingPlanes.length;
+    let floorCount = this.floorPlanes.length;
+    let wallCount = this.wallPlanes.length;
+    let obstacleCount = this.obstaclePlanes.length;
+    let hitSurfaceCount = this.hitSurfaces.size;
+    let total = floorCount + wallCount + obstacleCount + this.ceilingPlanes.length;
 
     // Compter les types d'obstacles
-    const obstacleTypes = {};
-    this.obstaclePlanes.forEach(({ data }) => {
-      const type = data.obstacleType || 'autre';
+    let obstacleTypes = {};
+    this.obstaclePlanes.forEach(function (item) {
+      let type = item.data.obstacleType || 'autre';
       obstacleTypes[type] = (obstacleTypes[type] || 0) + 1;
     });
 
     this.surfaceCount.setAttribute('value',
-      `Sol: ${floorCount} | Murs: ${wallCount} | Objets: ${obstacleCount}`);
+      'Sol: ' + floorCount + ' | Murs: ' + wallCount + ' | Objets: ' + obstacleCount);
 
     // Afficher plus de détails sur les obstacles
-    let details = `${total} surfaces + ${hitSurfaceCount} points`;
+    let details = total + ' surfaces + ' + hitSurfaceCount + ' points';
     if (obstacleCount > 0) {
-      const typesList = Object.entries(obstacleTypes)
-        .map(([type, count]) => `${count} ${type.split('/')[0]}`)
+      let typesList = Object.entries(obstacleTypes)
+        .map(function (entry) { return entry[1] + ' ' + entry[0].split('/')[0]; })
         .slice(0, 2)
         .join(', ');
-      details += `\n${typesList}`;
+      details += '\n' + typesList;
     } else {
-      details += `\nContinuez à scanner...`;
+      details += '\nContinuez à scanner...';
     }
 
     this.scanText.setAttribute('value', details);
@@ -939,10 +941,10 @@ AFRAME.registerComponent('room-detection', {
 
   // Reconstruit visuels + bounds après un reset du reference space
   _rebuildVisualsAfterReset: function (deltaMatrix) {
-    var delta = deltaMatrix || new THREE.Matrix4();
+    let delta = deltaMatrix || new THREE.Matrix4();
 
     this.clearPlaneVisuals();
-    var oldBox = document.querySelector('#spawn-zone-bounds');
+    let oldBox = document.querySelector('#spawn-zone-bounds');
     if (oldBox && oldBox.parentNode) oldBox.parentNode.removeChild(oldBox);
 
     // Transformer les poses de tous les plans avec la matrice delta
@@ -956,13 +958,13 @@ AFRAME.registerComponent('room-detection', {
     this.detectedPlanes.forEach(function (planeData, plane) {
       try {
         // Calculer la nouvelle matrice de pose : delta * oldPose
-        var oldPoseMatrix = new THREE.Matrix4().fromArray(planeData.pose.transform.matrix);
-        var newPoseMatrix = new THREE.Matrix4().multiplyMatrices(delta, oldPoseMatrix);
+        let oldPoseMatrix = new THREE.Matrix4().fromArray(planeData.pose.transform.matrix);
+        let newPoseMatrix = new THREE.Matrix4().multiplyMatrices(delta, oldPoseMatrix);
 
         // Décomposer pour extraire position + orientation (utiles pour detectOpenings)
-        var newPos = new THREE.Vector3();
-        var newQuat = new THREE.Quaternion();
-        var newScale = new THREE.Vector3();
+        let newPos = new THREE.Vector3();
+        let newQuat = new THREE.Quaternion();
+        let newScale = new THREE.Vector3();
         newPoseMatrix.decompose(newPos, newQuat, newScale);
 
         // Créer un objet pose synthétique compatible avec le reste du code
@@ -976,15 +978,15 @@ AFRAME.registerComponent('room-detection', {
         planeData._visualCreated = false;
 
         // Recalculer bounds / worldY / dimensions depuis polygon + nouvelle pose
-        var polygon = planeData.polygon;
+        let polygon = planeData.polygon;
         if (polygon && polygon.length > 0) {
-          var sumY = 0;
-          var minX = Infinity, maxX = -Infinity;
-          var minY = Infinity, maxY = -Infinity;
-          var minZ = Infinity, maxZ = -Infinity;
+          let sumY = 0;
+          let minX = Infinity, maxX = -Infinity;
+          let minY = Infinity, maxY = -Infinity;
+          let minZ = Infinity, maxZ = -Infinity;
 
           polygon.forEach(function (v) {
-            var vec = new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(newPoseMatrix);
+            let vec = new THREE.Vector3(v.x, v.y, v.z).applyMatrix4(newPoseMatrix);
             sumY += vec.y;
             if (vec.x < minX) minX = vec.x;
             if (vec.x > maxX) maxX = vec.x;
@@ -994,7 +996,7 @@ AFRAME.registerComponent('room-detection', {
             if (vec.z > maxZ) maxZ = vec.z;
           });
 
-          var avgY = sumY / polygon.length;
+          let avgY = sumY / polygon.length;
           planeData.worldY = avgY;
           planeData.bounds = { minX: minX, maxX: maxX, minY: minY, maxY: maxY, minZ: minZ, maxZ: maxZ };
           planeData.dimensions = {
@@ -1025,23 +1027,23 @@ AFRAME.registerComponent('room-detection', {
     }.bind(this));
 
     // Calculer la hauteur
-    var newCeilingY = this.roomBounds.maxY;
-    var height = newCeilingY - this.floorY;
+    let newCeilingY = this.roomBounds.maxY;
+    let height = newCeilingY - this.floorY;
     if (!isFinite(height) || height < 1.5) height = 2.5;
     height = Math.min(height, 4.0);
 
     // Recréer la boîte de spawn zone avec le plus grand sol
-    var roomData = null;
+    let roomData = null;
     try {
-      var largestFloorEntry = null;
-      var maxArea = 0;
+      let largestFloorEntry = null;
+      let maxArea = 0;
       this.floorPlanes.forEach(function (fp) {
-        var area = fp.data && fp.data.dimensions ? fp.data.dimensions.area : 0;
+        let area = fp.data && fp.data.dimensions ? fp.data.dimensions.area : 0;
         if (area > maxArea) { maxArea = area; largestFloorEntry = fp; }
       });
 
       if (largestFloorEntry && largestFloorEntry.data.pose) {
-        var floorBounds = largestFloorEntry.data.bounds;
+        let floorBounds = largestFloorEntry.data.bounds;
         roomData = {
           width: floorBounds.maxX - floorBounds.minX,
           depth: floorBounds.maxZ - floorBounds.minZ,
@@ -1092,8 +1094,9 @@ AFRAME.registerComponent('room-detection', {
   },
 
   clearPlaneVisuals: function () {
-    this.planeMeshes.forEach(mesh => {
-      this.el.sceneEl.object3D.remove(mesh);
+    let scene = this.el.sceneEl;
+    this.planeMeshes.forEach(function (mesh) {
+      scene.object3D.remove(mesh);
       if (mesh.geometry) mesh.geometry.dispose();
       if (mesh.material) mesh.material.dispose();
     });
@@ -1104,64 +1107,88 @@ AFRAME.registerComponent('room-detection', {
     this.openings = [];
 
     try {
-      var centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
-      var centerZ = (this.roomBounds.minZ + this.roomBounds.maxZ) / 2;
+      let centerX = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
+      let centerZ = (this.roomBounds.minZ + this.roomBounds.maxZ) / 2;
+
+      // --- Extraire la vraie normale d'un plan vertical depuis sa pose ---
+      function getWallNormal(poseData, cx, cz) {
+        // La matrice du plan donne l'orientation réelle
+        let mat = new THREE.Matrix4();
+        mat.fromArray(poseData.transform.matrix);
+        // Le vecteur Y local du plan = la normale de la surface
+        let normalVec = new THREE.Vector3(mat.elements[4], mat.elements[5], mat.elements[6]).normalize();
+        // N'utiliser que XZ (on veut la direction horizontale)
+        let n = { x: normalVec.x, y: 0, z: normalVec.z };
+        let len = Math.sqrt(n.x * n.x + n.z * n.z);
+        if (len < 0.01) return null; // plan horizontal, pas un mur
+        n.x /= len;
+        n.z /= len;
+        // S'assurer que la normale pointe VERS L'EXTÉRIEUR (opposé au centre)
+        let pos = poseData.transform.position;
+        let toCenter = { x: cx - pos.x, z: cz - pos.z };
+        let dot = n.x * toCenter.x + n.z * toCenter.z;
+        if (dot > 0) { n.x = -n.x; n.z = -n.z; } // inverser si elle pointe vers le centre
+        return n;
+      }
+
+      function getWallName(normal) {
+        if (Math.abs(normal.z) > Math.abs(normal.x)) {
+          return normal.z < 0 ? 'north' : 'south';
+        }
+        return normal.x < 0 ? 'west' : 'east';
+      }
 
       // 1) Par semanticLabel (Quest 3) ou heuristique par taille
-      var labeledOpenings = this.wallPlanes.filter(function (wp) {
-        var label = (wp.data.semanticLabel || wp.plane.semanticLabel || '').toLowerCase();
+      let labeledOpenings = this.wallPlanes.filter(function (wp) {
+        let label = (wp.data.semanticLabel || wp.plane.semanticLabel || '').toLowerCase();
         return label === 'door' || label === 'window' || label === 'opening';
       });
 
-      var candidates;
+      let candidates;
       if (labeledOpenings.length > 0) {
         candidates = labeledOpenings;
       } else {
         // Seuil adaptatif : moitié de l'aire du plus grand mur
-        var maxArea = 0;
+        let maxArea = 0;
         this.wallPlanes.forEach(function (wp) {
           if (!wp.data || !wp.data.bounds) return;
-          var b = wp.data.bounds;
-          var w = Math.max(b.maxX - b.minX, b.maxZ - b.minZ);
-          var h = b.maxY - b.minY;
+          let b = wp.data.bounds;
+          let w = Math.max(b.maxX - b.minX, b.maxZ - b.minZ);
+          let h = b.maxY - b.minY;
           if (w * h > maxArea) maxArea = w * h;
         });
-        var areaThreshold = Math.max(maxArea * 0.5, 2.5);
+        let areaThreshold = Math.max(maxArea * 0.5, 2.5);
 
         candidates = this.wallPlanes.filter(function (wp) {
           if (!wp.data || !wp.data.bounds) return false;
-          var b = wp.data.bounds;
-          var a = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * (b.maxY - b.minY);
+          let b = wp.data.bounds;
+          let a = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) * (b.maxY - b.minY);
           return a < areaThreshold;
         });
       }
 
-      // 2) Créer les openings
-      var self = this;
+      // 2) Créer les openings avec la VRAIE normale du mur
+      let self = this;
       candidates.forEach(function (wp) {
         try {
-          var plane = wp.plane, data = wp.data;
+          let plane = wp.plane, data = wp.data;
           if (!data || !data.pose || !data.bounds) return;
 
-          var pos = data.pose.transform.position;
-          var bounds = data.bounds;
-          var width = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
-          var height = bounds.maxY - bounds.minY;
+          let pos = data.pose.transform.position;
+          let bounds = data.bounds;
+          let width = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+          let height = bounds.maxY - bounds.minY;
 
-          var toCenter = { x: centerX - pos.x, z: centerZ - pos.z };
-          var normal = { x: 0, y: 0, z: 0 };
-          var wallName = '';
+          // Normale RÉELLE depuis la pose du plan
+          let normal = getWallNormal(data.pose, centerX, centerZ);
+          if (!normal) return; // skip if not a wall
+          let wallName = getWallName(normal);
 
-          if (Math.abs(toCenter.z) > Math.abs(toCenter.x)) {
-            if (pos.z < centerZ) { normal = { x: 0, y: 0, z: -1 }; wallName = 'north'; }
-            else { normal = { x: 0, y: 0, z: 1 }; wallName = 'south'; }
-          } else {
-            if (pos.x < centerX) { normal = { x: -1, y: 0, z: 0 }; wallName = 'west'; }
-            else { normal = { x: 1, y: 0, z: 0 }; wallName = 'east'; }
-          }
+          let label = (data.semanticLabel || plane.semanticLabel || '').toLowerCase();
+          let type = (label === 'door') ? 'door' : (label === 'window') ? 'window' : (height > 1.8 ? 'door' : 'window');
 
-          var label = (data.semanticLabel || plane.semanticLabel || '').toLowerCase();
-          var type = (label === 'door') ? 'door' : (label === 'window') ? 'window' : (height > 1.8 ? 'door' : 'window');
+          console.log('[opening]', type, wallName, 'pos:', pos.x.toFixed(2), pos.y.toFixed(2), pos.z.toFixed(2),
+            'normal:', normal.x.toFixed(2), normal.z.toFixed(2), 'size:', width.toFixed(2), 'x', height.toFixed(2));
 
           self.openings.push({
             type: type,
@@ -1174,38 +1201,10 @@ AFRAME.registerComponent('room-detection', {
         } catch (err) { /* ignore */ }
       });
 
-      // Fallback : ouvertures par défaut
-      if (this.openings.length === 0) {
-        var doorY = this.floorY + 1.0;
-        var windowY = this.floorY + 1.8;
+      console.log('[detectOpenings] 📍 TOTAL détecté:', self.openings.length, 'ouverture(s)');
 
-        this.openings.push({
-          type: 'door',
-          position: { x: centerX, y: doorY, z: this.roomBounds.minZ },
-          normal: { x: 0, y: 0, z: -1 },
-          size: { width: 1.0, height: 2.0 },
-          wall: 'north'
-        });
-        this.openings.push({
-          type: 'window',
-          position: { x: this.roomBounds.maxX, y: windowY, z: centerZ },
-          normal: { x: 1, y: 0, z: 0 },
-          size: { width: 1.2, height: 1.2 },
-          wall: 'east'
-        });
-      }
     } catch (err) {
       console.error('detectOpenings error:', err);
-      if (this.openings.length === 0) {
-        var cx = (this.roomBounds.minX + this.roomBounds.maxX) / 2;
-        this.openings.push({
-          type: 'door',
-          position: { x: cx, y: this.floorY + 1.0, z: this.roomBounds.minZ },
-          normal: { x: 0, y: 0, z: -1 },
-          size: { width: 1.0, height: 2.0 },
-          wall: 'north'
-        });
-      }
     }
   },
 
@@ -1213,37 +1212,36 @@ AFRAME.registerComponent('room-detection', {
     this.isScanning = false;
     this.scanComplete = true;
 
-    var totalPlanes = this.detectedPlanes.size;
-    console.log('Scan complete:', totalPlanes, 'surfaces');
+    let totalPlanes = this.detectedPlanes.size;
 
     // Mettre à jour l'UI
     this.scanTitle.setAttribute('value', '✅ SCAN COMPLETE');
     this.scanTitle.setAttribute('color', '#00ff00');
-    this.scanText.setAttribute('value', `${totalPlanes} surfaces\nAdapting water...`);
+    this.scanText.setAttribute('value', totalPlanes + ' surfaces\nAdapting water...');
     this.progressBar.setAttribute('color', '#00ff00');
 
-    var roomData = null;
+    let roomData = null;
 
     if (this.floorPlanes.length > 0) {
-      var largestFloor = this.floorPlanes[0];
-      var maxArea = 0;
+      let largestFloor = this.floorPlanes[0];
+      let maxArea = 0;
 
       this.floorPlanes.forEach(function (fp) {
-        var area = fp.data.dimensions ? fp.data.dimensions.area || 0 : 0;
+        let area = fp.data.dimensions ? fp.data.dimensions.area || 0 : 0;
         if (area > maxArea) {
           maxArea = area;
           largestFloor = fp;
         }
       });
 
-      var floorData = largestFloor.data;
-      var floorBounds = floorData.bounds;
-      var width = floorBounds.maxX - floorBounds.minX;
-      var depth = floorBounds.maxZ - floorBounds.minZ;
-      var centerX = (floorBounds.minX + floorBounds.maxX) / 2;
-      var centerZ = (floorBounds.minZ + floorBounds.maxZ) / 2;
+      let floorData = largestFloor.data;
+      let floorBounds = floorData.bounds;
+      let width = floorBounds.maxX - floorBounds.minX;
+      let depth = floorBounds.maxZ - floorBounds.minZ;
+      let centerX = (floorBounds.minX + floorBounds.maxX) / 2;
+      let centerZ = (floorBounds.minZ + floorBounds.maxZ) / 2;
 
-      var height = this.roomBounds.maxY - this.floorY;
+      let height = this.roomBounds.maxY - this.floorY;
       if (!isFinite(height) || height < 1.5) height = 2.5;
       height = Math.min(height, 4.0);
 
@@ -1260,10 +1258,10 @@ AFRAME.registerComponent('room-detection', {
         orientedBox: null
       };
     } else {
-      var bounds = this.roomBounds;
-      var width = bounds.maxX - bounds.minX;
-      var depth = bounds.maxZ - bounds.minZ;
-      var height = bounds.maxY - bounds.minY;
+      let bounds = this.roomBounds;
+      let width = bounds.maxX - bounds.minX;
+      let depth = bounds.maxZ - bounds.minZ;
+      let height = bounds.maxY - bounds.minY;
 
       if (!isFinite(width) || width < 1) width = 6;
       if (!isFinite(depth) || depth < 1) depth = 6;
@@ -1272,8 +1270,8 @@ AFRAME.registerComponent('room-detection', {
       depth = Math.min(Math.max(depth, 2), 20);
       height = Math.min(Math.max(height, 1.5), 5);
 
-      var centerX = isFinite(bounds.minX) && isFinite(bounds.maxX) ? (bounds.minX + bounds.maxX) / 2 : 0;
-      var centerZ = isFinite(bounds.minZ) && isFinite(bounds.maxZ) ? (bounds.minZ + bounds.maxZ) / 2 : -2;
+      let centerX = isFinite(bounds.minX) && isFinite(bounds.maxX) ? (bounds.minX + bounds.maxX) / 2 : 0;
+      let centerZ = isFinite(bounds.minZ) && isFinite(bounds.maxZ) ? (bounds.minZ + bounds.maxZ) / 2 : -2;
 
       roomData = {
         width: width, depth: depth, height: height,
@@ -1282,8 +1280,17 @@ AFRAME.registerComponent('room-detection', {
       };
     }
 
-    this.createSpawnZoneBoundingBox(roomData);
-    this.detectOpenings();
+    try {
+      this.createSpawnZoneBoundingBox(roomData);
+    } catch (e) {
+      console.warn('[room-detection] createSpawnZoneBoundingBox error:', e);
+    }
+
+    try {
+      this.detectOpenings();
+    } catch (e) {
+      console.warn('[room-detection] detectOpenings error:', e);
+    }
 
     if (window && window.FISH_ZONE) {
       window.FISH_ZONE.roomBounds = roomData.bounds;
@@ -1293,6 +1300,11 @@ AFRAME.registerComponent('room-detection', {
       window.FISH_ZONE.openings = this.openings;
       window.FISH_ZONE.scanned = true;
     }
+
+    console.log('[room-detection] Emitting room-scanned: w=' + roomData.width +
+      ' d=' + roomData.depth + ' h=' + roomData.height +
+      ' cx=' + roomData.centerX + ' cz=' + roomData.centerZ +
+      ' orientedBox=' + !!roomData.orientedBox);
 
     this.el.sceneEl.emit('room-scanned', {
       bounds: roomData.bounds,
@@ -1311,22 +1323,53 @@ AFRAME.registerComponent('room-detection', {
       openings: this.openings
     });
 
-    var self = this;
+    this.ensureLaserControlsActive();
+
+    let self = this;
     setTimeout(function () {
       self.scanPanel.setAttribute('visible', 'false');
       if (!self.data.debug) {
-        setTimeout(function () { self.fadeOutPlaneVisuals(); }, 2000);
+        setTimeout(function () {
+          self.fadeOutPlaneVisuals();
+        }, 2000);
       }
     }, 3000);
   },
 
+  ensureLaserControlsActive: function () {
+    console.log('[laser] 🎯 Activation laser');
+
+    function activateHands() {
+      let hands = document.querySelectorAll('#leftHand, #rightHand');
+      hands.forEach(function (hand) {
+        try {
+          // Forcer le raycaster à montrer la ligne
+          let rc = hand.components['raycaster'];
+          if (rc) {
+            // Reconfigurer showLine via setAttribute pour que A-Frame mette à jour internement
+            hand.setAttribute('raycaster', 'showLine', true);
+            if (rc.refreshObjects) rc.refreshObjects();
+            console.log('[laser] ✅', hand.id, 'raycaster ligne activée');
+          }
+        } catch (e) {
+          console.log('[laser] ⚠️', hand.id, 'erreur:', e);
+        }
+      });
+    }
+
+    // Activer immédiatement + avec délai pour laisser les contrôleurs s'initialiser
+    activateHands();
+    setTimeout(activateHands, 500);
+    setTimeout(activateHands, 2000);
+  },
+
   fadeOutPlaneVisuals: function () {
-    var fadeTime = 1500;
-    var startTime = Date.now();
-    var self = this;
+    let fadeTime = 1500;
+    let startTime = Date.now();
+    let self = this;
     function fade() {
-      var progress = Math.min((Date.now() - startTime) / fadeTime, 1);
-      var opacity = 1 - progress;
+      let progress = Math.min((Date.now() - startTime) / fadeTime, 1);
+      let opacity = 1 - progress;
       self.planeMeshes.forEach(function (mesh) {
         if (mesh.material) mesh.material.opacity *= opacity;
       });

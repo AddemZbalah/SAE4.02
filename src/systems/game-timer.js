@@ -337,5 +337,4 @@
     getTotalScore: function () { return totalScore; }
   };
 
-  console.log('Game timer system loaded');
 })();

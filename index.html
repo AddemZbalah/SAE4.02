@@ -182,12 +182,10 @@
     </a-entity>
 
     <!-- Mains VR -->
-    <a-entity id="leftHand" hand-controls="hand: left; handModelStyle: lowPoly; color: #15ACCF"
-      laser-controls="hand: left; defaultModelColor: #00ffff"
-      raycaster="objects: .clickable, .fish-target; showLine: true; lineColor: cyan; lineOpacity: 0.8"></a-entity>
-    <a-entity id="rightHand" hand-controls="hand: right; handModelStyle: lowPoly; color: #15ACCF"
-      laser-controls="hand: right; defaultModelColor: #00ffff"
-      raycaster="objects: .clickable, .fish-target; showLine: true; lineColor: cyan; lineOpacity: 0.8"></a-entity>
+    <a-entity id="leftHand" laser-controls="hand: left; defaultModelColor: #15ACCF"
+      raycaster="objects: .clickable, .fish-target; far: 10"></a-entity>
+    <a-entity id="rightHand" laser-controls="hand: right; defaultModelColor: #15ACCF"
+      raycaster="objects: .clickable, .fish-target; far: 10"></a-entity>
 
     <!-- Effet d'eau -->
     <a-entity id="water-surface" position="0 0 -2" water-adapter>
